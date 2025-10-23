@@ -207,6 +207,15 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     });
 
     // Pipe: opus (from Discord) -> opusDecoder (PCM stereo s16le) -> audioTransform (stereo->mono)
+    // Add diagnostic logging for incoming Opus packets (raw input)
+    audioStream.on('data', (opusPacket) => {
+      try {
+        console.log(`🔔 [OPUS-INPUT] Received opus packet for ${userId}: ${opusPacket.length} bytes`);
+      } catch (err) {
+        // ignore logging errors
+      }
+    });
+
     // Add diagnostic logging on opus decoder output (PCM chunks)
     opusDecoder.on('data', (pcmChunk) => {
       try {
@@ -225,6 +234,7 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
       }
     });
 
+    // Correct piping: Opus stream -> decoder -> mono transform
     audioStream.pipe(opusDecoder).pipe(audioTransform);
 
   // Ensure voice activity map exists for VAD logging
@@ -240,8 +250,7 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     const chunkBuffer = [];
     let bufferedBytes = 0;
 
-    // Pipe audio through the mono transform, then handle buffering here
-    audioStream.pipe(audioTransform);
+  // Buffering is handled from the mono transform 'data' events (no extra piping needed)
 
     audioTransform.on('data', (chunk) => {
       try {
