@@ -1,4 +1,5 @@
 import { Client, Collection, Events, GatewayIntentBits, REST, Routes, ActivityType } from 'discord.js';
+import { createServer } from 'http';
 import { config, validateConfig, logConfig } from './config.js';
 import { setupCleanupHandlers, emergencyCleanup } from './utils/cleanup.js';
 import { initializeGemini, testGeminiConnection } from './utils/summarizer.js';
@@ -32,6 +33,12 @@ let isShuttingDown = false;
 async function startBot() {
   try {
     console.log('🚀 Starting Discord Voice Recording Bot...');
+    
+    // Start health check server FIRST (Railway needs this immediately)
+    if (config.server.healthCheck) {
+      console.log('🏥 Starting health check server...');
+      startHealthCheckServer();
+    }
     
     // Validate configuration
     validateConfig();
@@ -83,11 +90,23 @@ async function startBot() {
     
     // Login to Discord
     console.log('🔑 Logging in to Discord...');
-    await client.login(config.discord.token);
+    try {
+      await client.login(config.discord.token);
+    } catch (error) {
+      console.error('❌ Failed to login to Discord:', error);
+      console.log('🏥 Health check server will continue running...');
+      // Don't exit - keep health check server running for Railway
+    }
     
   } catch (error) {
     console.error('❌ Failed to start bot:', error);
-    process.exit(1);
+    // Start health check anyway for Railway
+    if (config.server.healthCheck) {
+      console.log('🏥 Starting health check server (bot failed)...');
+      startHealthCheckServer();
+    }
+    // Don't exit immediately - let Railway health check work
+    console.log('⚠️ Bot startup failed, but keeping process alive for health checks');
   }
 }
 
@@ -149,11 +168,6 @@ function setupEventHandlers() {
       await registerSlashCommands();
     } catch (error) {
       console.error('❌ Failed to register slash commands:', error);
-    }
-    
-    // Start health check server if configured
-    if (config.server.healthCheck) {
-      startHealthCheckServer();
     }
     
     console.log('🟢 Bot is fully operational!');
@@ -272,39 +286,77 @@ async function registerSlashCommands() {
  */
 function startHealthCheckServer() {
   try {
-    // Import http module dynamically to avoid loading if not needed
-    import('http').then(({ createServer }) => {
-      const server = createServer((req, res) => {
-        if (req.url === '/health' || req.url === '/') {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+    const server = createServer((req, res) => {
+      // Set CORS headers
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      
+      if (req.method === 'OPTIONS') {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+      
+      if (req.url === '/health' || req.url === '/') {
+        try {
+          const healthData = {
             status: 'healthy',
-            uptime: process.uptime(),
+            uptime: Math.floor(process.uptime()),
             timestamp: new Date().toISOString(),
             bot: {
               connected: client?.isReady() || false,
-              guilds: client?.guilds.cache.size || 0,
+              guilds: client?.guilds?.cache?.size || 0,
               user: client?.user?.tag || null
             },
-            memory: process.memoryUsage(),
-            version: '1.0.0'
-          }));
-        } else {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('Not Found');
+            memory: {
+              used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+              total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+            },
+            version: '1.0.0',
+            port: config.server.port
+          };
+          
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(healthData, null, 2));
+          
+          if (config.server.environment === 'development') {
+            console.log(`🏥 Health check accessed: ${req.url}`);
+          }
+        } catch (error) {
+          console.error('❌ Health check error:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'error', message: error.message }));
         }
-      });
-      
-      server.listen(config.server.port, () => {
-        console.log(`🏥 Health check server running on port ${config.server.port}`);
-      });
-      
-      server.on('error', (error) => {
-        console.warn('⚠️ Health check server error:', error.message);
-      });
+      } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+      }
     });
+    
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        console.warn(`⚠️ Port ${config.server.port} is already in use`);
+        // Try a different port
+        const altPort = parseInt(config.server.port) + 1;
+        server.listen(altPort, '0.0.0.0', () => {
+          console.log(`🏥 Health check server running on port ${altPort} (fallback)`);
+        });
+      } else {
+        console.error('❌ Health check server error:', error);
+      }
+    });
+    
+    server.listen(config.server.port, '0.0.0.0', () => {
+      console.log(`🏥 Health check server running on port ${config.server.port}`);
+      console.log(`🌐 Health endpoint: http://0.0.0.0:${config.server.port}/health`);
+    });
+    
+    return server;
+    
   } catch (error) {
-    console.warn('⚠️ Could not start health check server:', error.message);
+    console.error('❌ Failed to start health check server:', error);
+    return null;
   }
 }
 
@@ -393,6 +445,11 @@ function setupPerformanceMonitoring() {
  */
 async function main() {
   try {
+    // Start health check server immediately for Railway
+    console.log('🏥 Starting health check server for Railway...');
+    startHealthCheckServer();
+    
+    // Start the Discord bot
     await startBot();
     
     // Start performance monitoring after bot is ready
@@ -404,7 +461,8 @@ async function main() {
     
   } catch (error) {
     console.error('💥 Fatal error starting bot:', error);
-    process.exit(1);
+    // Keep the health check server running even if bot fails
+    console.log('🏥 Keeping health check server alive...');
   }
 }
 
