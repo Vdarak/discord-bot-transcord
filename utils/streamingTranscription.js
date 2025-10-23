@@ -175,11 +175,10 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     audioTransform.on('data', (chunk) => {
       try {
         if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
-          // Convert audio chunk to base64 as required by AssemblyAI
-          const base64Audio = chunk.toString('base64');
-          
-          // Send audio using the correct format from AssemblyAI docs
-          websocket.send(base64Audio);
+          // Send raw PCM bytes as a binary WebSocket frame.
+          // AssemblyAI accepts audio frames as bytes (50ms - 1000ms). Sending binary avoids the server
+          // attempting to parse the frame as JSON (which causes Invalid JSON errors).
+          websocket.send(chunk, { binary: true });
         } else {
           console.warn(`⚠️ [STREAMING] Skipping audio chunk - connection closed for ${userId}`);
         }
