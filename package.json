@@ -30,8 +30,7 @@
     "fs-extra": "^11.2.0",
     "@google/generative-ai": "^0.17.0",
     "ffmpeg-static": "^5.2.0",
-    "dotenv": "^16.3.1",
-    "sodium-native": "^4.0.10"
+    "dotenv": "^16.3.1"
   },
   "engines": {
     "node": ">=18.0.0 <22.0.0"
