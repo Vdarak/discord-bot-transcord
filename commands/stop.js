@@ -20,7 +20,7 @@ export async function execute(interaction) {
     console.log(`⏹️ Stop command executed by ${interaction.user.tag} in ${interaction.guild.name}`);
     
     // Defer reply for long processing time
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply({ flags: [] });
     
     // Permission check
     if (!hasPermission(interaction)) {

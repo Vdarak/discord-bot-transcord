@@ -13,7 +13,7 @@ export async function execute(interaction) {
   try {
     console.log(`❓ Help command executed by ${interaction.user.tag}`);
     
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [64] }); // 64 = EPHEMERAL flag
     
     const embed = new EmbedBuilder()
       .setColor(embedColors.info)
