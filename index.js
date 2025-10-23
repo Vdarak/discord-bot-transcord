@@ -116,7 +116,7 @@ async function loadCommands() {
     for (const file of commandFiles) {
       try {
         const commandModule = await import(file);
-        const command = commandModule.default;
+        const command = commandModule;
         
         if (command && command.data && command.execute) {
           client.commands.set(command.data.name, command);
