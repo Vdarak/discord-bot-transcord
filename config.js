@@ -31,6 +31,7 @@ export const config = {
   discord: {
     token: process.env.DISCORD_BOT_TOKEN,
     summaryChannelId: process.env.SUMMARY_CHANNEL_ID,
+    statusChannelId: '1431006332147863705', // Channel for bot status messages
     allowedRoleId: process.env.ALLOWED_ROLE_ID || null,
     clientId: process.env.DISCORD_CLIENT_ID || null
   },

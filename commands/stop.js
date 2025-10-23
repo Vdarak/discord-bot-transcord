@@ -129,6 +129,26 @@ export async function execute(interaction) {
       const summaryEmbed = await createSummaryEmbed(meetingSummary, combinedTranscript, recordingStatus, processingError);
       const summaryMessage = await summaryChannel.send({ embeds: [summaryEmbed] });
       
+      // Send status to designated status channel
+      try {
+        const statusChannel = await interaction.client.channels.fetch(config.discord.statusChannelId);
+        if (statusChannel && statusChannel.id !== summaryChannel.id) {
+          const statusEmbed = new EmbedBuilder()
+            .setColor(processingError ? embedColors.warning : embedColors.success)
+            .setTitle('📝 Recording Processed')
+            .setDescription(`Meeting recording completed and summary generated`)
+            .addFields(
+              { name: '📊 Stats', value: `Duration: ${formatDuration(recordingStatus.duration)}\\nParticipants: ${recordingStatus.participants}`, inline: true },
+              { name: '📝 Summary', value: `Posted in <#${config.discord.summaryChannelId}>`, inline: true }
+            )
+            .setTimestamp();
+          
+          await statusChannel.send({ embeds: [statusEmbed] });
+        }
+      } catch (error) {
+        console.warn('⚠️ Could not send status message:', error.message);
+      }
+      
       // Send completion message
       const completionEmbed = new EmbedBuilder()
         .setColor(processingError ? embedColors.warning : embedColors.success)

@@ -131,15 +131,35 @@ export async function execute(interaction) {
       
       await interaction.editReply({ embeds: [embed] });
       
-      // Send warning to voice channel text chat
+      // Send status to designated status channel
+      try {
+        const statusChannel = await interaction.client.channels.fetch(config.discord.statusChannelId);
+        if (statusChannel) {
+          const statusEmbed = new EmbedBuilder()
+            .setColor(embedColors.success)
+            .setTitle('🔴 Recording Started')
+            .setDescription(`Recording started in **${voiceChannel.name}** by ${interaction.user.tag}`)
+            .addFields(
+              { name: '👥 Participants', value: `${otherMembers.size} users`, inline: true },
+              { name: '🕐 Started At', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+            )
+            .setTimestamp();
+          
+          await statusChannel.send({ embeds: [statusEmbed] });
+        }
+      } catch (error) {
+        console.warn('⚠️ Could not send status message:', error.message);
+      }
+      
+      // Send Discord policy compliance warning to voice channel text chat
       if (voiceChannel.guild.systemChannel || interaction.channel) {
         const warningChannel = voiceChannel.guild.systemChannel || interaction.channel;
         try {
           const warningEmbed = new EmbedBuilder()
             .setColor(embedColors.warning)
             .setTitle('🔴 Voice Recording Active')
-            .setDescription(`**Meeting recording is now active in ${voiceChannel.name}**\\n\\n⚠️ **Privacy Notice:**\\n• All voice communications are being recorded\\n• Recording will be transcribed and summarized\\n• Use \`/stop\` to end the recording`)
-            .setFooter({ text: `Started by ${interaction.user.tag}` })
+            .setDescription(`**Meeting recording is now active in ${voiceChannel.name}**\\n\\n⚠️ **Important Discord Policy Notice:**\\n• Bot can only record users who actively speak\\n• Recording requires participant awareness and consent\\n• All voice data will be transcribed and summarized\\n• Users can leave the channel to opt out\\n\\n**Technical Note:** If no audio is captured, ensure users are speaking clearly and the bot has proper permissions.`)
+            .setFooter({ text: `Started by ${interaction.user.tag} • Use /stop to end recording` })
             .setTimestamp();
           
           await warningChannel.send({ embeds: [warningEmbed] });

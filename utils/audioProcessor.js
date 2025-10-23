@@ -62,6 +62,26 @@ export async function createUserAudioStream(connection, userId, username) {
       }
     });
     
+    // Add debugging for Discord voice policy
+    let dataReceived = false;
+    audioStream.on('data', (chunk) => {
+      if (!dataReceived) {
+        console.log(`🔊 First audio data received from ${username} (${chunk.length} bytes)`);
+        dataReceived = true;
+      }
+    });
+    
+    // Timeout to check if we're receiving audio data
+    setTimeout(() => {
+      if (!dataReceived) {
+        console.warn(`⚠️ No audio data received from ${username} after 10 seconds. This may be due to:`);
+        console.warn(`   - User not speaking actively`);
+        console.warn(`   - Discord privacy settings`);
+        console.warn(`   - Voice channel permissions`);
+        console.warn(`   - Bot voice connection issues`);
+      }
+    }, 10000);
+    
     // Create opus decoder
     const opusDecoder = new prism.opus.Decoder({
       frameSize: 960,
