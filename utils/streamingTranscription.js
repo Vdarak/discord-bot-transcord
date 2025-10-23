@@ -165,29 +165,67 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
       throw new Error('WebSocket connection is not open');
     }
     
-    // Create audio transform stream
+    // Create audio transform stream (stereo -> mono)
     const audioTransform = createAudioTransformStream(userId);
-    
-    // Connect audio pipeline
+
+    // Create a chunking transform that accumulates PCM bytes until target duration is reached
+    const chunkMs = 200; // default target chunk duration in milliseconds (between 50 and 1000)
+    const sampleRate = data.sampleRate || 48000; // fallback if not provided
+    const bytesPerSample = 2; // pcm_s16le -> 16-bit = 2 bytes per sample
+    const bytesPerMs = Math.floor((sampleRate / 1000) * bytesPerSample);
+    const targetBytes = Math.max( Math.round(bytesPerMs * 50), Math.min(Math.round(bytesPerMs * chunkMs), Math.round(bytesPerMs * 1000)) );
+
+    const chunkBuffer = [];
+    let bufferedBytes = 0;
+
+    // Pipe audio through the mono transform, then handle buffering here
     audioStream.pipe(audioTransform);
-    
-    // Handle transformed audio data
+
     audioTransform.on('data', (chunk) => {
       try {
-        if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
-          // Send raw PCM bytes as a binary WebSocket frame.
-          // AssemblyAI accepts audio frames as bytes (50ms - 1000ms). Sending binary avoids the server
-          // attempting to parse the frame as JSON (which causes Invalid JSON errors).
-          websocket.send(chunk, { binary: true });
-        } else {
-          console.warn(`⚠️ [STREAMING] Skipping audio chunk - connection closed for ${userId}`);
+        // Accumulate chunk
+        chunkBuffer.push(chunk);
+        bufferedBytes += chunk.length;
+
+        // If we've reached targetBytes (>=50ms worth), flush as one frame
+        if (bufferedBytes >= targetBytes) {
+          const frame = Buffer.concat(chunkBuffer, bufferedBytes);
+
+          if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
+            websocket.send(frame, { binary: true });
+            console.log(`🔊 [STREAMING] Sent audio frame for ${userId}: ${bufferedBytes} bytes (~${(bufferedBytes/bytesPerMs).toFixed(1)} ms)`);
+          } else {
+            console.warn(`⚠️ [STREAMING] Skipping audio chunk - connection closed for ${userId}`);
+          }
+
+          // reset buffer
+          chunkBuffer.length = 0;
+          bufferedBytes = 0;
         }
       } catch (error) {
         console.error(`❌ [STREAMING] Error sending audio for ${userId}:`, error);
+        // Reset buffer on error to avoid growing indefinitely
+        chunkBuffer.length = 0;
+        bufferedBytes = 0;
       }
     });
-    
+
     audioTransform.on('end', () => {
+      // Flush any remaining buffered audio (if within allowed duration)
+      try {
+        if (bufferedBytes > 0) {
+          const frame = Buffer.concat(chunkBuffer, bufferedBytes);
+          if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
+            websocket.send(frame, { binary: true });
+            console.log(`🔊 [STREAMING] Sent final audio frame for ${userId}: ${bufferedBytes} bytes (~${(bufferedBytes/bytesPerMs).toFixed(1)} ms)`);
+          } else {
+            console.warn(`⚠️ [STREAMING] Skipping final audio chunk - connection closed for ${userId}`);
+          }
+        }
+      } catch (error) {
+        console.error(`❌ [STREAMING] Error flushing final audio for ${userId}:`, error);
+      }
+
       console.log(`🔚 [STREAMING] Audio stream ended for user ${userId}`);
     });
     
