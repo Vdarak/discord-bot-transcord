@@ -281,7 +281,7 @@ async function registerSlashCommands() {
  */
 function startHealthCheckServer() {
   try {
-    const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
       // Set CORS headers
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -322,6 +322,53 @@ function startHealthCheckServer() {
           console.error('❌ Health check error:', error);
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'error', message: error.message }));
+        }
+      } else if (req.url && req.method === 'GET' && req.url.startsWith('/recordings')) {
+        try {
+          const parts = req.url.split('/').filter(Boolean);
+          // /recordings -> list
+          if (parts.length === 1) {
+            const recordingsDir = config.files && config.files.recordingsDir ? config.files.recordingsDir : join(__dirname, 'recordings');
+            try {
+              const files = await fs.readdir(recordingsDir);
+              const wavFiles = files.filter(f => f.endsWith('.wav'));
+              const list = wavFiles.map(f => ({ file: f, url: `/recordings/${encodeURIComponent(f)}` }));
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(list, null, 2));
+            } catch (dirErr) {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify([]));
+            }
+
+            return;
+          }
+
+          // /recordings/:file -> download
+          if (parts.length === 2) {
+            const recordingsDir = config.files && config.files.recordingsDir ? config.files.recordingsDir : join(__dirname, 'recordings');
+            const fileName = decodeURIComponent(parts[1]);
+            const filePath = join(recordingsDir, fileName);
+            try {
+              const stat = await fs.stat(filePath);
+              res.writeHead(200, {
+                'Content-Type': 'audio/wav',
+                'Content-Length': stat.size,
+                'Content-Disposition': `attachment; filename="${fileName}"`
+              });
+              const readStream = fs.createReadStream(filePath);
+              readStream.pipe(res);
+              return;
+            } catch (fileErr) {
+              res.writeHead(404, { 'Content-Type': 'text/plain' });
+              res.end('Not Found');
+              return;
+            }
+          }
+        } catch (error) {
+          console.error('❌ [HTTP] Recordings endpoint error:', error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+          return;
         }
       } else {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
