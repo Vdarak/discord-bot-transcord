@@ -107,6 +107,7 @@ async function loadCommands() {
     
     // Load command files
     const commandFiles = [
+      './commands/test.js',
       './commands/join.js',
       './commands/stop.js',
       './commands/recording-status.js',
@@ -160,6 +161,9 @@ function setupEventHandlers() {
   
   // Slash command interaction handler
   client.on(Events.InteractionCreate, async (interaction) => {
+    const startTime = Date.now();
+    console.log(`⚡ [INTERACTION] Received ${interaction.commandName} at ${startTime}`);
+    
     if (!interaction.isChatInputCommand()) return;
     
     const command = client.commands.get(interaction.commandName);
@@ -169,15 +173,21 @@ function setupEventHandlers() {
       return;
     }
     
+    const handlerTime = Date.now();
+    console.log(`⚡ [INTERACTION] Handler ready after ${handlerTime - startTime}ms`);
+
     try {
       console.log(`🔧 Executing command: ${interaction.commandName} by ${interaction.user.tag} in ${interaction.guild?.name || 'DM'}`);
       await command.execute(interaction);
+      
+      const endTime = Date.now();
+      console.log(`⚡ [INTERACTION] Command completed in ${endTime - startTime}ms`);
     } catch (error) {
       console.error(`❌ Command execution error (${interaction.commandName}):`, error);
       
       const errorMessage = {
         content: '❌ An error occurred while executing this command.',
-        ephemeral: true
+        flags: [64] // EPHEMERAL flag
       };
       
       try {

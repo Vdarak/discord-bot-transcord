@@ -194,17 +194,66 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     
     const { transcriber } = sessionData;
     
-    // Ensure transcriber is connected
+    // Ensure transcriber is connected and wait for it
     if (!sessionData.data.isConnected) {
       console.log(`🚀 [STREAMING] Connecting transcriber for session: ${sessionId}`);
-      await transcriber.connect();
+      
+      // Wait for the connection to open
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('AssemblyAI connection timeout'));
+        }, 10000); // 10 second timeout
+        
+        const onOpen = () => {
+          clearTimeout(timeout);
+          transcriber.off('error', onError);
+          resolve();
+        };
+        
+        const onError = (error) => {
+          clearTimeout(timeout);
+          transcriber.off('open', onOpen);
+          reject(error);
+        };
+        
+        transcriber.once('open', onOpen);
+        transcriber.once('error', onError);
+        
+        // Start the connection
+        transcriber.connect();
+      });
+      
+      console.log(`✅ [STREAMING] Transcriber connected for session: ${sessionId}`);
+    }
+    
+    // Verify connection is still open
+    if (!sessionData.data.isConnected) {
+      throw new Error('AssemblyAI connection is not open');
     }
     
     // Create audio transform stream
     const audioTransform = createAudioTransformStream(userId);
     
-    // Connect audio pipeline: Discord Audio -> Transform -> AssemblyAI
-    audioStream.pipe(audioTransform).pipe(transcriber.stream());
+    // Connect audio pipeline: Discord Audio -> Transform -> Write to transcriber
+    audioStream.pipe(audioTransform);
+    
+    // Manually handle the transformed audio data
+    audioTransform.on('data', (chunk) => {
+      try {
+        // Double-check connection before sending
+        if (sessionData.data.isConnected) {
+          transcriber.sendAudio(chunk);
+        } else {
+          console.warn(`⚠️ [STREAMING] Skipping audio chunk - connection closed for ${userId}`);
+        }
+      } catch (error) {
+        console.error(`❌ [STREAMING] Error sending audio for ${userId}:`, error);
+      }
+    });
+    
+    audioTransform.on('end', () => {
+      console.log(`🔚 [STREAMING] Audio stream ended for user ${userId}`);
+    });
     
     console.log(`✅ [STREAMING] Audio stream connected for user ${userId}`);
     

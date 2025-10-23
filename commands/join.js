@@ -13,11 +13,22 @@ export const data = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
 
 export async function execute(interaction) {
+  // Defer reply IMMEDIATELY to prevent timeout
+  const deferStart = Date.now();
+  try {
+    console.log(`⚡ [JOIN] Starting defer at ${deferStart}`);
+    await interaction.deferReply({ flags: [] });
+    const deferEnd = Date.now();
+    console.log(`⚡ [JOIN] Defer completed in ${deferEnd - deferStart}ms`);
+  } catch (error) {
+    const deferError = Date.now();
+    console.error(`❌ [JOIN] Failed to defer reply after ${deferError - deferStart}ms:`, error);
+    // If we can't defer, the interaction has likely timed out
+    return;
+  }
+
   try {
     console.log(`🎤 [JOIN] Join command executed by ${interaction.user.tag} in ${interaction.guild.name}`);
-    
-    // Defer reply for processing time
-    await interaction.deferReply({ flags: [] });
     
     // Permission check
     if (!hasPermission(interaction)) {
@@ -180,17 +191,8 @@ export async function execute(interaction) {
     
   } catch (error) {
     console.error('❌ [JOIN] Fatal error in join command:', error);
-    
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        embeds: [createErrorEmbed('❌ Fatal Error', `Failed to process join command: ${error.message}`)],
-        ephemeral: true
-      });
-    } else {
-      await interaction.editReply({
-        embeds: [createErrorEmbed('❌ Fatal Error', `Failed to process join command: ${error.message}`)]
-      });
-    }
+    // Let the global error handler in index.js manage the interaction response
+    throw error;
   }
 }
 
