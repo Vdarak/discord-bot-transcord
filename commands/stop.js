@@ -14,6 +14,14 @@ export const data = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
 
 export async function execute(interaction) {
+  // Log interaction metadata immediately to help debug timing / unknown interaction issues
+  try {
+    const now = Date.now();
+    console.log(`⚡ [INTERACTION META] id=${interaction.id} token=${interaction.token} created=${interaction.createdTimestamp} age=${now - interaction.createdTimestamp}ms`);
+  } catch (metaErr) {
+    console.warn('⚠️ [STOP] Could not read interaction metadata:', metaErr);
+  }
+
   // Defer reply IMMEDIATELY to prevent timeout
   try {
     await interaction.deferReply({ flags: [] });

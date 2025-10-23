@@ -13,6 +13,14 @@ export const data = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
 
 export async function execute(interaction) {
+  // Log interaction metadata immediately to help debug timing / unknown interaction issues
+  try {
+    const now = Date.now();
+    console.log(`⚡ [INTERACTION META] id=${interaction.id} token=${interaction.token} created=${interaction.createdTimestamp} age=${now - interaction.createdTimestamp}ms`);
+  } catch (metaErr) {
+    console.warn('⚠️ [JOIN] Could not read interaction metadata:', metaErr);
+  }
+
   // Defer reply IMMEDIATELY to prevent timeout
   const deferStart = Date.now();
   try {
@@ -90,8 +98,40 @@ export async function execute(interaction) {
       });
       
       // Wait for connection to be ready
-      await entersState(connection, VoiceConnectionStatus.Ready, 30000);
-      console.log('✅ [JOIN] Voice connection established');
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 30000);
+        console.log('✅ [JOIN] Voice connection established');
+      } catch (connErr) {
+        // Handle aborted/wait timeout specifically to give better feedback
+        console.error('❌ [JOIN] Voice connection failed or timed out:', connErr);
+        try {
+          // Clean up the connection if it exists
+          if (connection && typeof connection.destroy === 'function') {
+            connection.destroy();
+            console.log('🔌 [JOIN] Destroyed incomplete voice connection');
+          }
+        } catch (cleanupErr) {
+          console.warn('⚠️ [JOIN] Error while destroying connection:', cleanupErr);
+        }
+
+        // Provide a clearer error message for AbortError / timeout
+        const isAbort = connErr && (connErr.code === 'ABORT_ERR' || connErr.name === 'AbortError');
+        const friendlyMessage = isAbort
+          ? 'Timed out while connecting to the voice channel. This can happen if the bot lacks Connect/Speak permissions, the voice server is slow, or the voice adapter failed. Please check permissions and try again.'
+          : `Failed to connect to voice channel: ${connErr.message}`;
+
+        const errorEmbed = new EmbedBuilder()
+          .setColor(embedColors.error)
+          .setTitle('❌ Recording Setup Failed')
+          .setDescription(friendlyMessage)
+          .addFields(
+            { name: '🔧 Troubleshooting', value: '• Ensure the bot has Connect & Speak permissions\n• Make sure the voice region/server is healthy\n• Try inviting the bot again with proper scopes', inline: false }
+          )
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [errorEmbed] });
+        return; // stop further setup
+      }
       
       // Update bot nickname to indicate recording
       try {

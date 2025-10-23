@@ -33,9 +33,8 @@ export async function startStreamingSession(sessionId, connection, userIds) {
       disfluencies: false,
       speakerLabels: true
     });
-    
-    // Connect transcriber
-    await transcriber.connect();
+    // createStreamingTranscriber resolves when the AssemblyAI WebSocket session has begun
+    // so there's no separate `connect()` step to call here.
     
     // Set up audio streams for each user
     const userStreams = new Map();
