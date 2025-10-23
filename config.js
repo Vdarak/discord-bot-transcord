@@ -47,6 +47,8 @@ export const config = {
     maxDurationHours: parseInt(process.env.MAX_RECORDING_DURATION_HOURS) || 2,
     silenceTimeoutMinutes: parseInt(process.env.SILENCE_TIMEOUT_MINUTES) || 5,
     maxFileSizeMB: parseInt(process.env.MAX_FILE_SIZE_MB) || 100,
+    // If true, save raw recordings to disk and expose download API
+    saveToDisk: process.env.SAVE_RECORDINGS === 'true' || false,
     sampleRate: 48000,
     bitDepth: 16,
     channels: 2
@@ -56,6 +58,7 @@ export const config = {
   files: {
     tempDir: '/tmp',
     audioFormat: 'wav',
+    recordingsDir: process.env.RECORDINGS_DIR || './recordings',
     cleanup: {
       immediate: true,
       onError: true

@@ -1,6 +1,10 @@
 import { Transform } from 'stream';
 import { config } from '../config.js';
 import { WebSocket } from 'ws';
+import fs from 'fs';
+import { promises as fsp } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import Prism from 'prism-media';
 
 /**
@@ -60,6 +64,31 @@ export async function createStreamingTranscriber(sessionId, options = {}) {
       assemblySessionId: null,
       expiresAt: null
     };
+
+    // Optionally prepare recording to disk
+    const saveToDisk = options.saveToDisk || config.recording.saveToDisk || false;
+    if (saveToDisk) {
+      // Ensure recordings directory exists
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = dirname(__filename);
+      const recordingsDir = config.files && config.files.recordingsDir ? config.files.recordingsDir : join(__dirname, '..', 'recordings');
+      try {
+        await fsp.mkdir(recordingsDir, { recursive: true });
+      } catch (err) {
+        console.warn('⚠️ [STREAMING] Could not create recordings directory:', recordingsDir, err.message);
+      }
+
+      const rawPath = join(recordingsDir, `${sessionId}.pcm`);
+      const wavPath = join(recordingsDir, `${sessionId}.wav`);
+      const writeStream = fs.createWriteStream(rawPath, { flags: 'a' });
+      transcriptionData.recording = {
+        enabled: true,
+        rawPath,
+        wavPath,
+        writeStream
+      };
+      console.log(`💾 [STREAMING] Recording enabled for session ${sessionId} -> ${rawPath}`);
+    }
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -205,6 +234,14 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
 
           if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
             websocket.send(frame, { binary: true });
+            // Also write to disk if recording enabled
+            try {
+              if (data.recording && data.recording.enabled && data.recording.writeStream) {
+                data.recording.writeStream.write(frame);
+              }
+            } catch (writeErr) {
+              console.warn('⚠️ [STREAMING] Failed to write audio frame to disk:', writeErr.message);
+            }
             console.log(`🔊 [STREAMING] Sent audio frame for ${userId}: ${bufferedBytes} bytes (~${(bufferedBytes/bytesPerMs).toFixed(1)} ms)`);
           } else {
             console.warn(`⚠️ [STREAMING] Skipping audio chunk - connection closed for ${userId}`);
@@ -229,6 +266,14 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
           const frame = Buffer.concat(chunkBuffer, bufferedBytes);
           if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
             websocket.send(frame, { binary: true });
+            // write final to disk if enabled
+            try {
+              if (data.recording && data.recording.enabled && data.recording.writeStream) {
+                data.recording.writeStream.write(frame);
+              }
+            } catch (writeErr) {
+              console.warn('⚠️ [STREAMING] Failed to write final audio frame to disk:', writeErr.message);
+            }
             console.log(`🔊 [STREAMING] Sent final audio frame for ${userId}: ${bufferedBytes} bytes (~${(bufferedBytes/bytesPerMs).toFixed(1)} ms)`);
           } else {
             console.warn(`⚠️ [STREAMING] Skipping final audio chunk - connection closed for ${userId}`);
@@ -298,16 +343,32 @@ export async function stopStreamingTranscription(sessionId) {
       websocket.send(JSON.stringify({
         type: "Terminate"
       }));
-      
+
       // Wait a moment for final messages
       await new Promise(resolve => setTimeout(resolve, 1000));
-      
+
       websocket.close();
     }
-    
+
+    // If recording was enabled, finalize the raw PCM to WAV
+    if (data.recording && data.recording.enabled) {
+      try {
+        // Close the raw write stream first
+        if (data.recording.writeStream && typeof data.recording.writeStream.end === 'function') {
+          data.recording.writeStream.end();
+        }
+
+        // Create WAV file from raw PCM
+        await finalizeWavFile(data.recording.rawPath, data.recording.wavPath, /*channels*/1, /*sampleRate*/(data.sampleRate || 48000), /*bitDepth*/16);
+        console.log(`💾 [STREAMING] Finalized WAV: ${data.recording.wavPath}`);
+      } catch (recErr) {
+        console.error('❌ [STREAMING] Error finalizing recording to WAV:', recErr);
+      }
+    }
+
     // Remove from active transcribers
     activeTranscribers.delete(sessionId);
-    
+
     const combinedText = data.transcripts.map(t => t.text).join(' ').trim();
     const wordCount = data.transcripts.reduce((count, t) => count + (t.words?.length || 0), 0);
     const participantCount = data.participants ? data.participants.size : 0;
@@ -382,6 +443,55 @@ export function getStreamingStats(sessionId) {
     lastActivity: data.lastActivity,
     assemblySessionId: data.assemblySessionId
   };
+}
+
+/**
+ * Finalize a raw PCM file into a WAV file (RIFF header + PCM data)
+ * @param {string} rawPath - path to raw PCM file
+ * @param {string} wavPath - destination WAV file path
+ * @param {number} channels
+ * @param {number} sampleRate
+ * @param {number} bitDepth
+ */
+export async function finalizeWavFile(rawPath, wavPath, channels = 1, sampleRate = 48000, bitDepth = 16) {
+  // Read raw file size
+  try {
+    const stat = await fsp.stat(rawPath);
+    const dataSize = stat.size;
+
+    const bytesPerSample = bitDepth / 8;
+    const byteRate = sampleRate * channels * bytesPerSample;
+    const blockAlign = channels * bytesPerSample;
+
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + dataSize, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+    header.writeUInt16LE(1, 20); // AudioFormat (1 = PCM)
+    header.writeUInt16LE(channels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitDepth, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+
+    // Create write stream for WAV and pipe raw data
+    await new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(wavPath);
+      out.on('error', reject);
+      out.on('finish', resolve);
+      out.write(header);
+      const readStream = fs.createReadStream(rawPath);
+      readStream.on('error', reject);
+      readStream.pipe(out);
+    });
+  } catch (error) {
+    console.error('❌ [STREAMING] finalizeWavFile error:', error);
+    throw error;
+  }
 }
 
 /**
