@@ -7,6 +7,12 @@ import { cancelAllTranscriptions } from './utils/transcription.js';
 import { promises as fs } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import ffmpegPath from 'ffmpeg-static';
+
+// Set ffmpeg path for Railway compatibility
+if (ffmpegPath) {
+  process.env.FFMPEG_PATH = ffmpegPath;
+}
 
 /**
  * Discord Voice Recording Bot - Main Entry Point
