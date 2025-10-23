@@ -308,17 +308,49 @@ export async function stopStreamingTranscription(sessionId) {
     // Remove from active transcribers
     activeTranscribers.delete(sessionId);
     
-    const finalTranscript = data.transcripts.map(t => t.text).join(' ').trim();
+    const combinedText = data.transcripts.map(t => t.text).join(' ').trim();
     const wordCount = data.transcripts.reduce((count, t) => count + (t.words?.length || 0), 0);
-    
+    const participantCount = data.participants ? data.participants.size : 0;
+
+    // Compute average confidence if available
+    const confidences = data.transcripts.map(t => t.confidence).filter(c => typeof c === 'number');
+    const averageConfidence = confidences.length > 0 ? (confidences.reduce((a,b) => a+b, 0) / confidences.length) : 0;
+
     console.log(`✅ [STREAMING] Transcription completed for session: ${sessionId}`);
-    console.log(`📊 [STREAMING] Final stats: ${wordCount} words, ${data.participants.size} participants`);
-    
+    console.log(`📊 [STREAMING] Final stats: ${wordCount} words, ${participantCount} participants`);
+
+    // Build participants array (try to convert Map values to array)
+    const participantsArray = [];
+    if (data.participants && typeof data.participants.forEach === 'function') {
+      data.participants.forEach((value, key) => {
+        // value may be an object with name/metadata; normalize
+        if (typeof value === 'string') {
+          participantsArray.push({ id: key, name: value });
+        } else if (value && typeof value === 'object') {
+          participantsArray.push(Object.assign({ id: key }, value));
+        } else {
+          participantsArray.push({ id: key });
+        }
+      });
+    }
+
+    const finalTranscriptObject = {
+      combinedText,
+      transcripts: data.transcripts,
+      participants: participantsArray,
+      statistics: {
+        totalWords: wordCount,
+        participantCount,
+        averageConfidence
+      }
+    };
+
     return {
       sessionId,
       transcripts: data.transcripts,
       participants: data.participants,
-      finalTranscript,
+      combinedText,
+      finalTranscript: finalTranscriptObject,
       wordCount,
       duration: Date.now() - data.startTime
     };
