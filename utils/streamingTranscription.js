@@ -209,7 +209,10 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     // Pipe: opus (from Discord) -> opusDecoder (PCM stereo s16le) -> audioTransform (stereo->mono)
     audioStream.pipe(opusDecoder).pipe(audioTransform);
 
-    // Create a chunking transform that accumulates PCM bytes until target duration is reached
+  // Ensure voice activity map exists for VAD logging
+  if (!data.voiceActivity) data.voiceActivity = new Map();
+
+  // Create a chunking transform that accumulates PCM bytes until target duration is reached
     const chunkMs = 200; // default target chunk duration in milliseconds (between 50 and 1000)
     const sampleRate = data.sampleRate || 48000; // fallback if not provided
     const bytesPerSample = 2; // pcm_s16le -> 16-bit = 2 bytes per sample
@@ -231,6 +234,36 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
         // If we've reached targetBytes (>=50ms worth), flush as one frame
         if (bufferedBytes >= targetBytes) {
           const frame = Buffer.concat(chunkBuffer, bufferedBytes);
+
+          // Voice activity detection (RMS) on the assembled frame (pcm_s16le mono)
+          try {
+            const rms = computeRms(frame); // normalized 0..1
+            const vadThreshold = 0.02; // adjust as needed (0.02 ~= light speech)
+
+            let activity = data.voiceActivity.get(userId) || {};
+            const now = Date.now();
+
+            if (rms >= vadThreshold) {
+              // Detected speech
+              if (!activity.speaking) {
+                console.log(`🔊 [VAD] User ${userId} speaking (rms=${rms.toFixed(3)})`);
+                activity.speaking = true;
+              }
+              activity.lastSpoke = now;
+
+              // Reset idle timer
+              if (activity.idleTimer) clearTimeout(activity.idleTimer);
+              activity.idleTimer = setTimeout(() => {
+                activity.speaking = false;
+                console.log(`😶 [VAD] No sound detected for user ${userId} (idle > 5s)`);
+              }, 5000);
+
+            }
+
+            data.voiceActivity.set(userId, activity);
+          } catch (vadErr) {
+            console.warn('⚠️ [VAD] Error computing RMS:', vadErr.message);
+          }
 
           if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
             websocket.send(frame, { binary: true });
@@ -322,6 +355,25 @@ export function createAudioTransformStream(userId) {
 }
 
 /**
+ * Compute RMS (root mean square) for a PCM s16le Buffer and return normalized value 0..1
+ * @param {Buffer} buffer
+ * @returns {number} normalized RMS
+ */
+export function computeRms(buffer) {
+  if (!buffer || buffer.length === 0) return 0;
+  let sumSq = 0;
+  const sampleCount = Math.floor(buffer.length / 2);
+  for (let i = 0; i < sampleCount; i++) {
+    const val = buffer.readInt16LE(i * 2);
+    sumSq += val * val;
+  }
+  const meanSq = sumSq / Math.max(1, sampleCount);
+  const rms = Math.sqrt(meanSq);
+  // Normalize against max int16
+  return rms / 32767;
+}
+
+/**
  * Stops streaming transcription and returns final transcript
  * @param {string} sessionId - Session identifier
  * @returns {Promise<Object>} Final transcript data
@@ -364,6 +416,21 @@ export async function stopStreamingTranscription(sessionId) {
       } catch (recErr) {
         console.error('❌ [STREAMING] Error finalizing recording to WAV:', recErr);
       }
+    }
+
+    // Clear any VAD timers
+    try {
+      if (data.voiceActivity && typeof data.voiceActivity.forEach === 'function') {
+        data.voiceActivity.forEach((activity, uid) => {
+          try {
+            if (activity && activity.idleTimer) clearTimeout(activity.idleTimer);
+          } catch (e) {
+            // ignore
+          }
+        });
+      }
+    } catch (e) {
+      // ignore
     }
 
     // Remove from active transcribers
