@@ -1,6 +1,7 @@
 import { Transform } from 'stream';
 import { config } from '../config.js';
 import { WebSocket } from 'ws';
+import Prism from 'prism-media';
 
 /**
  * AssemblyAI Streaming Transcription Service - Direct WebSocket Implementation
@@ -167,6 +168,17 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     
     // Create audio transform stream (stereo -> mono)
     const audioTransform = createAudioTransformStream(userId);
+
+    // Many Discord voice receiver streams emit Opus packets, not raw PCM.
+    // Decode Opus -> PCM using prism-media before transforming to mono.
+    const opusDecoder = new Prism.opus.Decoder({
+      frameSize: 960,
+      channels: 2,
+      rate: data.sampleRate || 48000
+    });
+
+    // Pipe: opus (from Discord) -> opusDecoder (PCM stereo s16le) -> audioTransform (stereo->mono)
+    audioStream.pipe(opusDecoder).pipe(audioTransform);
 
     // Create a chunking transform that accumulates PCM bytes until target duration is reached
     const chunkMs = 200; // default target chunk duration in milliseconds (between 50 and 1000)
