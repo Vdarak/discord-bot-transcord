@@ -15,7 +15,7 @@ RUN apk add --no-cache \
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production --no-audit --no-fund
+RUN npm install --only=production --no-audit --no-fund --legacy-peer-deps
 
 # Copy source code
 COPY . .
