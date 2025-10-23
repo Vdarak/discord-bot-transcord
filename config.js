@@ -1,0 +1,181 @@
+import 'dotenv/config';
+
+/**
+ * Bot Configuration and Environment Variables
+ * Validates and exports all required environment variables with defaults
+ */
+
+// Validate required environment variables
+const requiredEnvVars = {
+  DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN,
+  ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY,
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  SUMMARY_CHANNEL_ID: process.env.SUMMARY_CHANNEL_ID
+};
+
+// Check for missing required variables
+const missingVars = Object.entries(requiredEnvVars)
+  .filter(([key, value]) => !value)
+  .map(([key]) => key);
+
+if (missingVars.length > 0) {
+  console.error('❌ Missing required environment variables:');
+  missingVars.forEach(varName => console.error(`   - ${varName}`));
+  console.error('\nPlease check your .env file and ensure all required variables are set.');
+  process.exit(1);
+}
+
+// Bot configuration object
+export const config = {
+  // Discord Bot Settings
+  discord: {
+    token: process.env.DISCORD_BOT_TOKEN,
+    summaryChannelId: process.env.SUMMARY_CHANNEL_ID,
+    allowedRoleId: process.env.ALLOWED_ROLE_ID || null,
+    clientId: process.env.DISCORD_CLIENT_ID || null
+  },
+
+  // API Keys
+  apis: {
+    assemblyAI: process.env.ASSEMBLYAI_API_KEY,
+    gemini: process.env.GEMINI_API_KEY
+  },
+
+  // Recording Settings
+  recording: {
+    maxDurationHours: parseInt(process.env.MAX_RECORDING_DURATION_HOURS) || 2,
+    silenceTimeoutMinutes: parseInt(process.env.SILENCE_TIMEOUT_MINUTES) || 5,
+    maxFileSizeMB: parseInt(process.env.MAX_FILE_SIZE_MB) || 100,
+    sampleRate: 48000,
+    bitDepth: 16,
+    channels: 2
+  },
+
+  // File Management
+  files: {
+    tempDir: '/tmp',
+    audioFormat: 'wav',
+    cleanup: {
+      immediate: true,
+      onError: true
+    }
+  },
+
+  // AssemblyAI Settings
+  assemblyAI: {
+    baseUrl: 'https://api.assemblyai.com/v2',
+    uploadEndpoint: '/upload',
+    transcriptEndpoint: '/transcript',
+    pollingInterval: 3000, // 3 seconds
+    maxConcurrent: 5,
+    speechModel: 'universal',
+    timeout: 300000 // 5 minutes
+  },
+
+  // Gemini Settings
+  gemini: {
+    model: 'gemini-2.0-flash-exp',
+    maxTokens: 8192,
+    temperature: 0.3,
+    summaryPrompt: `You are a professional meeting summarizer. Analyze this Discord voice meeting transcript and provide:
+1. Brief Overview (2-3 sentences)
+2. Key Discussion Points (bullet list)
+3. Action Items (if any, with assigned person if mentioned)
+4. Decisions Made (bullet list)
+5. Next Steps
+
+Meeting Transcript:
+`
+  },
+
+  // Server Settings
+  server: {
+    port: parseInt(process.env.PORT) || 3000,
+    environment: process.env.NODE_ENV || 'development',
+    healthCheck: true
+  },
+
+  // Logging Configuration
+  logging: {
+    level: process.env.LOG_LEVEL || 'info',
+    timestamps: true,
+    colors: process.env.NODE_ENV !== 'production'
+  }
+};
+
+// Voice Connection Settings
+export const voiceConfig = {
+  selfDeaf: true,
+  selfMute: false,
+  debug: config.server.environment === 'development'
+};
+
+// Audio Processing Settings
+export const audioConfig = {
+  sampleRate: config.recording.sampleRate,
+  channels: config.recording.channels,
+  bitDepth: config.recording.bitDepth,
+  format: 's16le', // 16-bit little-endian PCM
+  opusDecodingArgs: [
+    '-f', 's16le',
+    '-ar', config.recording.sampleRate.toString(),
+    '-ac', config.recording.channels.toString()
+  ]
+};
+
+// Discord Embed Colors
+export const embedColors = {
+  success: 0x00ff00,
+  error: 0xff0000,
+  warning: 0xffff00,
+  info: 0x3498db,
+  recording: 0xff6b6b,
+  summary: 0x3498db
+};
+
+// Utility function to validate configuration
+export function validateConfig() {
+  const errors = [];
+
+  // Validate numeric values
+  if (config.recording.maxDurationHours <= 0 || config.recording.maxDurationHours > 24) {
+    errors.push('MAX_RECORDING_DURATION_HOURS must be between 1 and 24');
+  }
+
+  if (config.recording.silenceTimeoutMinutes <= 0) {
+    errors.push('SILENCE_TIMEOUT_MINUTES must be greater than 0');
+  }
+
+  if (config.recording.maxFileSizeMB <= 0) {
+    errors.push('MAX_FILE_SIZE_MB must be greater than 0');
+  }
+
+  // Validate Discord Channel ID format
+  if (!/^\d{17,19}$/.test(config.discord.summaryChannelId)) {
+    errors.push('SUMMARY_CHANNEL_ID must be a valid Discord channel ID (17-19 digits)');
+  }
+
+  if (errors.length > 0) {
+    console.error('❌ Configuration validation failed:');
+    errors.forEach(error => console.error(`   - ${error}`));
+    process.exit(1);
+  }
+
+  console.log('✅ Configuration validated successfully');
+}
+
+// Log configuration (excluding sensitive data)
+export function logConfig() {
+  if (config.server.environment === 'development') {
+    console.log('🔧 Bot Configuration:');
+    console.log(`   Environment: ${config.server.environment}`);
+    console.log(`   Port: ${config.server.port}`);
+    console.log(`   Max Recording Duration: ${config.recording.maxDurationHours} hours`);
+    console.log(`   Silence Timeout: ${config.recording.silenceTimeoutMinutes} minutes`);
+    console.log(`   Max File Size: ${config.recording.maxFileSizeMB} MB`);
+    console.log(`   Summary Channel: ${config.discord.summaryChannelId}`);
+    console.log(`   Allowed Role: ${config.discord.allowedRoleId || 'None (using permissions)'}`);
+  }
+}
+
+export default config;
