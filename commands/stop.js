@@ -75,7 +75,15 @@ export async function execute(interaction) {
       wavFiles = await processAllRecordings(recordingFiles);
       
       if (wavFiles.length === 0) {
-        throw new Error('No audio files could be processed');
+        // If no files converted successfully, try to provide helpful error info
+        const errorMessage = recordingFiles.length > 0 
+          ? `All ${recordingFiles.length} recordings failed to convert to WAV format. This may be due to:\n• Empty PCM files (no audio captured)\n• FFmpeg conversion errors\n• Disk space issues`
+          : 'No recordings found to process';
+        throw new Error(errorMessage);
+      }
+      
+      if (wavFiles.length < recordingFiles.length) {
+        console.warn(`⚠️ Only ${wavFiles.length}/${recordingFiles.length} files converted successfully`);
       }
       
       // Update progress

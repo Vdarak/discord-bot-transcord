@@ -1,4 +1,4 @@
-import { createWriteStream, promises as fs } from 'fs';
+import { createWriteStream, createReadStream, promises as fs } from 'fs';
 import { pipeline } from 'stream';
 import { promisify } from 'util';
 import path from 'path';
@@ -94,15 +94,21 @@ export async function createUserAudioStream(connection, userId, username) {
     
     // Set up error handling for streams
     audioStream.on('error', (error) => {
-      console.error(`❌ Audio stream error for ${username}:`, error);
+      if (error.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        console.error(`❌ Audio stream error for ${username}:`, error);
+      }
     });
     
     opusDecoder.on('error', (error) => {
-      console.error(`❌ Opus decoder error for ${username}:`, error);
+      if (error.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        console.error(`❌ Opus decoder error for ${username}:`, error);
+      }
     });
     
     writeStream.on('error', (error) => {
-      console.error(`❌ Write stream error for ${username}:`, error);
+      if (error.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        console.error(`❌ Write stream error for ${username}:`, error);
+      }
     });
     
     // Pipeline: Discord Audio Stream -> Opus Decoder -> PCM File
@@ -111,7 +117,9 @@ export async function createUserAudioStream(connection, userId, username) {
       opusDecoder,
       writeStream
     ).catch(error => {
-      console.error(`❌ Stream pipeline error for ${username}:`, error);
+      if (error.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        console.error(`❌ Stream pipeline error for ${username}:`, error);
+      }
     });
     
     const streamInfo = {
@@ -242,7 +250,7 @@ export async function convertPcmToWav(pcmFilePath, wavFilePath) {
       throw new Error(`File size (${fileSizeMB.toFixed(2)} MB) exceeds limit (${config.recording.maxFileSizeMB} MB)`);
     }
     
-    // Create FFmpeg transcoder
+    // Create FFmpeg transcoder with better error handling
     const transcoder = new prism.FFmpeg({
       args: [
         '-f', 's16le', // Input format: 16-bit little-endian PCM
@@ -251,21 +259,42 @@ export async function convertPcmToWav(pcmFilePath, wavFilePath) {
         '-i', 'pipe:0', // Input from stdin
         '-f', 'wav', // Output format: WAV
         '-acodec', 'pcm_s16le', // Audio codec
+        '-y', // Overwrite output files
         wavFilePath // Output file
       ]
     });
     
-    // Create read stream from PCM file
-    const readStream = createWriteStream(pcmFilePath);
+    // Set up error handling for FFmpeg
+    transcoder.on('error', (error) => {
+      console.error(`❌ FFmpeg error:`, error);
+    });
     
-    // Pipeline: PCM File -> FFmpeg -> WAV File
+    // Create read stream from PCM file
+    const readStream = createReadStream(pcmFilePath);
+    
+    // Pipeline: PCM File -> FFmpeg
     await pipelineAsync(
       readStream,
       transcoder
     );
     
-    // Verify WAV file was created
-    const wavStats = await fs.stat(wavFilePath);
+    // Wait a bit for file system to sync
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Verify WAV file was created and has content
+    let wavStats;
+    try {
+      wavStats = await fs.stat(wavFilePath);
+      if (wavStats.size === 0) {
+        throw new Error('WAV file is empty');
+      }
+    } catch (statError) {
+      if (statError.code === 'ENOENT') {
+        throw new Error('WAV file was not created by FFmpeg');
+      }
+      throw statError;
+    }
+    
     console.log(`✅ WAV conversion complete: ${path.basename(wavFilePath)} (${(wavStats.size / 1024 / 1024).toFixed(2)} MB)`);
     
     return wavFilePath;
