@@ -105,8 +105,8 @@ Meeting Transcript:
 
 // Voice Connection Settings
 export const voiceConfig = {
-  selfDeaf: true,
-  selfMute: false,
+  selfDeaf: false,  // Bot must hear users to record them
+  selfMute: true,   // Bot shouldn't speak during recording
   debug: config.server.environment === 'development'
 };
 
