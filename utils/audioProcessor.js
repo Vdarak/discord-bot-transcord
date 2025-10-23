@@ -245,21 +245,43 @@ export async function convertPcmToWav(pcmFilePath, wavFilePath) {
     const fileSizeMB = getFileSizeInMB(stats.size);
     console.log(`📊 PCM file size: ${fileSizeMB.toFixed(2)} MB`);
     
+    // Check if file size makes sense for audio data
+    // At 48kHz, 16-bit, mono: ~96KB per second
+    const expectedMinSize = 1000; // At least 1KB
+    if (stats.size < expectedMinSize) {
+      console.warn(`⚠️ PCM file very small (${stats.size} bytes) - may not contain enough audio data`);
+    }
+    
+    // Read first few bytes to validate PCM data
+    const fileHandle = await fs.open(pcmFilePath, 'r');
+    const buffer = Buffer.alloc(100);
+    await fileHandle.read(buffer, 0, 100, 0);
+    await fileHandle.close();
+    
+    // Check if file contains any non-zero data
+    const hasData = buffer.some(byte => byte !== 0);
+    if (!hasData) {
+      throw new Error('PCM file contains only silence (all zeros)');
+    }
+    
+    console.log(`✅ PCM file validation passed: ${fileSizeMB.toFixed(2)} MB with audio data`);
+    
     // Check file size limit
     if (fileSizeMB > config.recording.maxFileSizeMB) {
       throw new Error(`File size (${fileSizeMB.toFixed(2)} MB) exceeds limit (${config.recording.maxFileSizeMB} MB)`);
     }
     
-    // Create FFmpeg transcoder with better error handling
+    // Use file-based FFmpeg approach instead of piping (more reliable on Railway)
     const transcoder = new prism.FFmpeg({
       args: [
         '-f', 's16le', // Input format: 16-bit little-endian PCM
         '-ar', audioConfig.sampleRate.toString(), // Sample rate
         '-ac', audioConfig.channels.toString(), // Channels
-        '-i', 'pipe:0', // Input from stdin
+        '-i', pcmFilePath, // Input file directly (not pipe)
         '-f', 'wav', // Output format: WAV
         '-acodec', 'pcm_s16le', // Audio codec
         '-y', // Overwrite output files
+        '-loglevel', 'error', // Reduce FFmpeg verbosity
         wavFilePath // Output file
       ]
     });
@@ -269,14 +291,19 @@ export async function convertPcmToWav(pcmFilePath, wavFilePath) {
       console.error(`❌ FFmpeg error:`, error);
     });
     
-    // Create read stream from PCM file
-    const readStream = createReadStream(pcmFilePath);
-    
-    // Pipeline: PCM File -> FFmpeg
-    await pipelineAsync(
-      readStream,
-      transcoder
-    );
+    // FFmpeg doesn't need input stream when using file path
+    // Just wait for the process to complete
+    await new Promise((resolve, reject) => {
+      transcoder.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg exited with code ${code}`));
+        }
+      });
+      
+      transcoder.on('error', reject);
+    });
     
     // Wait a bit for file system to sync
     await new Promise(resolve => setTimeout(resolve, 100));
