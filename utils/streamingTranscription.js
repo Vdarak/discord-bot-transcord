@@ -207,6 +207,24 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     });
 
     // Pipe: opus (from Discord) -> opusDecoder (PCM stereo s16le) -> audioTransform (stereo->mono)
+    // Add diagnostic logging on opus decoder output (PCM chunks)
+    opusDecoder.on('data', (pcmChunk) => {
+      try {
+        console.log(`🎚️ [OPUS-DECODE] Decoded PCM for ${userId}: ${pcmChunk.length} bytes`);
+      } catch (err) {
+        // ignore logging errors
+      }
+    });
+
+    // Also log mono transform output sizes for diagnosis
+    audioTransform.on('data', (monoChunk) => {
+      try {
+        console.log(`🔍 [TRANSFORM] Mono chunk for ${userId}: ${monoChunk.length} bytes`);
+      } catch (err) {
+        // ignore
+      }
+    });
+
     audioStream.pipe(opusDecoder).pipe(audioTransform);
 
   // Ensure voice activity map exists for VAD logging
