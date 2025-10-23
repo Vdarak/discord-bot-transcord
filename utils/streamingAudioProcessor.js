@@ -294,3 +294,30 @@ export function validateStreamingConfig() {
   console.log('✅ [STREAM-AUDIO] Configuration validated');
   return true;
 }
+
+/**
+ * Stops all active streaming sessions during shutdown
+ * @returns {Promise<void>}
+ */
+export async function stopAllStreamingSessions() {
+  console.log('🛑 [STREAM-AUDIO] Stopping all streaming sessions...');
+  
+  const sessionIds = Array.from(activeStreamingSessions.keys());
+  if (sessionIds.length === 0) {
+    console.log('✅ [STREAM-AUDIO] No active sessions to stop');
+    return;
+  }
+  
+  console.log(`📋 [STREAM-AUDIO] Found ${sessionIds.length} active sessions to stop`);
+  
+  for (const sessionId of sessionIds) {
+    try {
+      console.log(`🛑 [STREAM-AUDIO] Stopping session: ${sessionId}`);
+      await stopStreamingSession(sessionId);
+    } catch (error) {
+      console.error(`❌ [STREAM-AUDIO] Error stopping session ${sessionId}:`, error);
+    }
+  }
+  
+  console.log('✅ [STREAM-AUDIO] All streaming sessions stopped');
+}

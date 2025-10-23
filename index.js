@@ -1,19 +1,12 @@
 import { Client, Collection, Events, GatewayIntentBits, REST, Routes, ActivityType } from 'discord.js';
 import { createServer } from 'http';
 import { config, validateConfig, logConfig } from './config.js';
-import { setupCleanupHandlers, emergencyCleanup } from './utils/cleanup.js';
 import { initializeGemini, testGeminiConnection } from './utils/summarizer.js';
-import { validateAudioConfig } from './utils/audioProcessor.js';
-import { cancelAllTranscriptions } from './utils/transcription.js';
+import { validateStreamingConfig, stopAllStreamingSessions } from './utils/streamingAudioProcessor.js';
+import { initializeStreamingClient } from './utils/streamingTranscription.js';
 import { promises as fs } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import ffmpegPath from 'ffmpeg-static';
-
-// Set ffmpeg path for Railway compatibility
-if (ffmpegPath) {
-  process.env.FFMPEG_PATH = ffmpegPath;
-}
 
 /**
  * Discord Voice Recording Bot - Main Entry Point
@@ -38,9 +31,9 @@ async function startBot() {
     validateConfig();
     logConfig();
     
-    // Validate audio configuration
-    if (!validateAudioConfig()) {
-      throw new Error('Invalid audio configuration');
+    // Validate streaming configuration
+    if (!validateStreamingConfig()) {
+      throw new Error('Invalid streaming transcription configuration');
     }
     
     // Initialize Gemini AI
@@ -77,8 +70,7 @@ async function startBot() {
     // Set up event handlers
     setupEventHandlers();
     
-    // Set up cleanup handlers for graceful shutdown
-    setupCleanupHandlers();
+    // Set up streaming session cleanup handlers
     setupBotShutdownHandlers();
     
     // Login to Discord
@@ -375,11 +367,8 @@ function setupBotShutdownHandlers() {
         });
       }
       
-      // Cancel active transcriptions
-      cancelAllTranscriptions();
-      
-      // Emergency cleanup of files
-      await emergencyCleanup();
+      // Stop all active streaming sessions
+      await stopAllStreamingSessions();
       
       // Disconnect from Discord
       if (client) {
