@@ -34,12 +34,6 @@ async function startBot() {
   try {
     console.log('🚀 Starting Discord Voice Recording Bot...');
     
-    // Start health check server FIRST (Railway needs this immediately)
-    if (config.server.healthCheck) {
-      console.log('🏥 Starting health check server...');
-      startHealthCheckServer();
-    }
-    
     // Validate configuration
     validateConfig();
     logConfig();
@@ -66,8 +60,7 @@ async function startBot() {
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.GuildMessages
       ],
       presence: {
         activities: [{ 
