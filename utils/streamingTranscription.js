@@ -1,183 +1,149 @@
-import { AssemblyAI } from 'assemblyai';
 import { Transform } from 'stream';
 import { config } from '../config.js';
+import { WebSocket } from 'ws';
 
 /**
- * AssemblyAI Streaming Transcription Service
- * Handles real-time voice transcription using streaming API
+ * AssemblyAI Streaming Transcription Service - Direct WebSocket Implementation
+ * Following AssemblyAI's streaming API documentation
  */
 
-// Initialize AssemblyAI client
-let client;
+// Track active connections
 let activeTranscribers = new Map();
 
 /**
- * Initialize AssemblyAI streaming client
+ * Initialize streaming client (now using direct WebSocket)
  */
 export function initializeStreamingClient() {
-  try {
-    if (!config.apis.assemblyAI) {
-      throw new Error('AssemblyAI API key not found in configuration');
-    }
-    
-    client = new AssemblyAI({
-      apiKey: config.apis.assemblyAI
-    });
-    
-    console.log('✅ [STREAMING] AssemblyAI client initialized');
-    return client;
-    
-  } catch (error) {
-    console.error('❌ [STREAMING] Failed to initialize AssemblyAI client:', error);
-    throw error;
-  }
+  console.log('✅ [STREAMING] Direct WebSocket client ready');
 }
 
 /**
- * Creates a streaming transcriber for a recording session
+ * Creates a streaming transcriber using direct WebSocket connection
  * @param {string} sessionId - Unique session identifier
- * @param {Object} options - Transcription options
- * @returns {Promise<Object>} Transcriber instance and handlers
+ * @param {Object} options - Configuration options
+ * @returns {Promise<Object>} WebSocket connection and data
  */
 export async function createStreamingTranscriber(sessionId, options = {}) {
   try {
-    console.log(`🎯 [STREAMING] Creating transcriber for session: ${sessionId}`);
+    console.log(`🎯 [STREAMING] Creating WebSocket transcriber for session: ${sessionId}`);
     
-    // Ensure client is initialized
-    if (!client) {
-      initializeStreamingClient();
+    // Build WebSocket URL with required query parameters
+    const wsUrl = new URL('wss://streaming.assemblyai.com/v3/ws');
+    wsUrl.searchParams.set('sample_rate', '48000'); // Discord's sample rate
+    wsUrl.searchParams.set('encoding', 'pcm_s16le'); // Discord's audio format
+    wsUrl.searchParams.set('format_turns', 'true');
+    
+    // Add optional parameters
+    if (options.end_of_turn_confidence_threshold) {
+      wsUrl.searchParams.set('end_of_turn_confidence_threshold', options.end_of_turn_confidence_threshold.toString());
     }
     
-    const CONNECTION_PARAMS = {
-      sampleRate: 48000, // Discord's sample rate
-      channels: 1,       // Mono audio
-      formatTurns: true,
-      punctuate: true,
-      ...options
-    };
+    console.log(`🔗 [STREAMING] Connecting to: ${wsUrl.toString()}`);
     
-    console.log(`🔧 [STREAMING] Connection params:`, CONNECTION_PARAMS);
+    // Create WebSocket with Authorization header
+    const ws = new WebSocket(wsUrl.toString(), {
+      headers: {
+        'Authorization': config.apis.assemblyAI
+      }
+    });
     
-    // Create streaming transcriber
-    const transcriber = client.streaming.transcriber(CONNECTION_PARAMS);
-    
-    // Store transcription data
+    // Initialize session data
     const transcriptionData = {
       sessionId,
       transcripts: [],
       participants: new Map(),
       isConnected: false,
       startTime: Date.now(),
-      lastActivity: Date.now()
+      lastActivity: Date.now(),
+      websocket: ws,
+      assemblySessionId: null,
+      expiresAt: null
     };
-    
-    // Set up event handlers
-    transcriber.on('open', ({ id }) => {
-      console.log(`✅ [STREAMING] Session opened: ${id} for ${sessionId}`);
-      transcriptionData.isConnected = true;
-      transcriptionData.assemblySessionId = id;
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('WebSocket connection timeout'));
+      }, 10000);
+
+      ws.on('open', () => {
+        console.log(`✅ [STREAMING] WebSocket opened for session: ${sessionId}`);
+        transcriptionData.isConnected = true;
+      });
+
+      ws.on('message', (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          console.log(`📨 [STREAMING] Message type: ${message.type} for ${sessionId}`);
+          
+          switch (message.type) {
+            case 'Begin':
+              console.log(`🚀 [STREAMING] Session began: ${message.id}`);
+              transcriptionData.assemblySessionId = message.id;
+              transcriptionData.expiresAt = message.expires_at;
+              
+              // Store the transcriber and resolve the promise
+              activeTranscribers.set(sessionId, {
+                websocket: ws,
+                data: transcriptionData
+              });
+              
+              clearTimeout(timeout);
+              resolve({ websocket: ws, data: transcriptionData });
+              break;
+              
+            case 'Turn':
+              if (message.transcript && message.transcript.trim() !== '') {
+                console.log(`💬 [STREAMING] Turn: "${message.transcript}"`);
+                
+                const transcriptEntry = {
+                  text: message.transcript,
+                  timestamp: Date.now(),
+                  turnOrder: message.turn_order,
+                  isFormatted: message.turn_is_formatted,
+                  endOfTurn: message.end_of_turn,
+                  confidence: message.end_of_turn_confidence,
+                  words: message.words || []
+                };
+                
+                transcriptionData.transcripts.push(transcriptEntry);
+                transcriptionData.lastActivity = Date.now();
+              }
+              break;
+              
+            case 'Termination':
+              console.log(`🔚 [STREAMING] Session terminated for ${sessionId}`);
+              transcriptionData.isConnected = false;
+              break;
+              
+            default:
+              console.log(`📋 [STREAMING] Unknown message: ${message.type}`);
+          }
+        } catch (error) {
+          console.error(`❌ [STREAMING] Message parse error for ${sessionId}:`, error);
+        }
+      });
+
+      ws.on('error', (error) => {
+        console.error(`❌ [STREAMING] WebSocket error for ${sessionId}:`, error);
+        transcriptionData.isConnected = false;
+        clearTimeout(timeout);
+        reject(error);
+      });
+
+      ws.on('close', (code, reason) => {
+        console.log(`🔒 [STREAMING] WebSocket closed for ${sessionId}: ${code} - ${reason}`);
+        transcriptionData.isConnected = false;
+      });
     });
-    
-    transcriber.on('error', (error) => {
-      console.error(`❌ [STREAMING] Transcriber error for ${sessionId}:`, error);
-      transcriptionData.isConnected = false;
-    });
-    
-    transcriber.on('close', (code, reason) => {
-      console.log(`🔒 [STREAMING] Session closed for ${sessionId}:`, code, reason);
-      transcriptionData.isConnected = false;
-    });
-    
-    transcriber.on('turn', (turn) => {
-      if (!turn.transcript || turn.transcript.trim() === '') {
-        return;
-      }
-      
-      console.log(`💬 [STREAMING] Transcript received for ${sessionId}: "${turn.transcript}"`);
-      
-      // Store transcript with metadata
-      const transcriptEntry = {
-        text: turn.transcript,
-        confidence: turn.confidence || 0,
-        timestamp: Date.now(),
-        duration: turn.duration || 0,
-        speaker: turn.speaker || 'Unknown'
-      };
-      
-      transcriptionData.transcripts.push(transcriptEntry);
-      transcriptionData.lastActivity = Date.now();
-      
-      // Update participant tracking
-      if (!transcriptionData.participants.has(turn.speaker)) {
-        transcriptionData.participants.set(turn.speaker, {
-          name: turn.speaker,
-          wordCount: 0,
-          transcriptCount: 0
-        });
-      }
-      
-      const participant = transcriptionData.participants.get(turn.speaker);
-      participant.wordCount += turn.transcript.split(' ').length;
-      participant.transcriptCount += 1;
-    });
-    
-    // Store transcriber for session management
-    activeTranscribers.set(sessionId, {
-      transcriber,
-      data: transcriptionData,
-      createdAt: Date.now()
-    });
-    
-    console.log(`✅ [STREAMING] Transcriber created for session: ${sessionId}`);
-    
-    return {
-      transcriber,
-      data: transcriptionData,
-      connect: () => transcriber.connect(),
-      close: () => transcriber.close(),
-      getTranscripts: () => transcriptionData.transcripts,
-      isConnected: () => transcriptionData.isConnected
-    };
-    
+
   } catch (error) {
-    console.error(`❌ [STREAMING] Failed to create transcriber for ${sessionId}:`, error);
+    console.error(`❌ [STREAMING] Failed to create WebSocket transcriber:`, error);
     throw error;
   }
 }
 
 /**
- * Creates a transform stream to convert Discord audio to AssemblyAI format
- * @param {string} userId - User ID for logging
- * @returns {Transform} Transform stream
- */
-export function createAudioTransformStream(userId) {
-  return new Transform({
-    transform(chunk, encoding, callback) {
-      try {
-        // Discord sends Opus-decoded PCM data
-        // AssemblyAI expects raw PCM, so we can pass it through
-        // Note: Discord uses 48kHz, 16-bit, stereo -> mono conversion needed
-        
-        // Convert stereo to mono if needed (take left channel)
-        // Each sample is 2 bytes (16-bit), stereo = 4 bytes per frame
-        const monoChunk = Buffer.alloc(chunk.length / 2);
-        for (let i = 0; i < chunk.length; i += 4) {
-          // Take left channel (first 2 bytes of each 4-byte frame)
-          monoChunk[i / 2] = chunk[i];
-          monoChunk[i / 2 + 1] = chunk[i + 1];
-        }
-        
-        callback(null, monoChunk);
-      } catch (error) {
-        console.error(`❌ [STREAMING] Audio transform error for ${userId}:`, error);
-        callback(error);
-      }
-    }
-  });
-}
-
-/**
- * Connects audio stream to AssemblyAI transcriber
+ * Connects audio stream to AssemblyAI WebSocket
  * @param {string} sessionId - Session identifier
  * @param {Stream} audioStream - Discord audio stream
  * @param {string} userId - User ID for the stream
@@ -191,58 +157,29 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     if (!sessionData) {
       throw new Error(`No transcriber found for session: ${sessionId}`);
     }
+
+    const { websocket, data } = sessionData;
     
-    const { transcriber } = sessionData;
-    
-    // Ensure transcriber is connected and wait for it
-    if (!sessionData.data.isConnected) {
-      console.log(`🚀 [STREAMING] Connecting transcriber for session: ${sessionId}`);
-      
-      // Wait for the connection to open
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('AssemblyAI connection timeout'));
-        }, 10000); // 10 second timeout
-        
-        const onOpen = () => {
-          clearTimeout(timeout);
-          transcriber.off('error', onError);
-          resolve();
-        };
-        
-        const onError = (error) => {
-          clearTimeout(timeout);
-          transcriber.off('open', onOpen);
-          reject(error);
-        };
-        
-        transcriber.once('open', onOpen);
-        transcriber.once('error', onError);
-        
-        // Start the connection
-        transcriber.connect();
-      });
-      
-      console.log(`✅ [STREAMING] Transcriber connected for session: ${sessionId}`);
-    }
-    
-    // Verify connection is still open
-    if (!sessionData.data.isConnected) {
-      throw new Error('AssemblyAI connection is not open');
+    // Verify WebSocket is open
+    if (!data.isConnected || websocket.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket connection is not open');
     }
     
     // Create audio transform stream
     const audioTransform = createAudioTransformStream(userId);
     
-    // Connect audio pipeline: Discord Audio -> Transform -> Write to transcriber
+    // Connect audio pipeline
     audioStream.pipe(audioTransform);
     
-    // Manually handle the transformed audio data
+    // Handle transformed audio data
     audioTransform.on('data', (chunk) => {
       try {
-        // Double-check connection before sending
-        if (sessionData.data.isConnected) {
-          transcriber.sendAudio(chunk);
+        if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
+          // Convert audio chunk to base64 as required by AssemblyAI
+          const base64Audio = chunk.toString('base64');
+          
+          // Send audio using the correct format from AssemblyAI docs
+          websocket.send(base64Audio);
         } else {
           console.warn(`⚠️ [STREAMING] Skipping audio chunk - connection closed for ${userId}`);
         }
@@ -264,6 +201,33 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
 }
 
 /**
+ * Creates audio transform stream for Discord audio
+ * @param {string} userId - User identifier
+ * @returns {Transform} Transform stream
+ */
+export function createAudioTransformStream(userId) {
+  return new Transform({
+    transform(chunk, encoding, callback) {
+      try {
+        // Discord sends stereo PCM data, convert to mono
+        // Each sample is 2 bytes (16-bit), stereo = 4 bytes per frame
+        const monoChunk = Buffer.alloc(chunk.length / 2);
+        for (let i = 0; i < chunk.length; i += 4) {
+          // Take left channel (first 2 bytes of each 4-byte frame)
+          monoChunk[i / 2] = chunk[i];
+          monoChunk[i / 2 + 1] = chunk[i + 1];
+        }
+        
+        callback(null, monoChunk);
+      } catch (error) {
+        console.error(`❌ [STREAMING] Audio transform error for ${userId}:`, error);
+        callback(error);
+      }
+    }
+  });
+}
+
+/**
  * Stops streaming transcription and returns final transcript
  * @param {string} sessionId - Session identifier
  * @returns {Promise<Object>} Final transcript data
@@ -274,74 +238,87 @@ export async function stopStreamingTranscription(sessionId) {
     
     const sessionData = activeTranscribers.get(sessionId);
     if (!sessionData) {
-      console.warn(`⚠️ [STREAMING] No active transcriber found for session: ${sessionId}`);
-      return null;
+      console.warn(`⚠️ [STREAMING] No session found for: ${sessionId}`);
+      return { transcripts: [], participants: new Map() };
     }
     
-    const { transcriber, data } = sessionData;
+    const { websocket, data } = sessionData;
     
-    // Close the transcriber
-    if (data.isConnected) {
-      await transcriber.close();
+    // Send termination message
+    if (websocket.readyState === WebSocket.OPEN) {
+      websocket.send(JSON.stringify({
+        type: "Terminate"
+      }));
+      
+      // Wait a moment for final messages
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      websocket.close();
     }
-    
-    // Compile final transcript
-    const finalTranscript = {
-      sessionId,
-      combinedText: data.transcripts.map(t => t.text).join(' '),
-      transcripts: data.transcripts,
-      participants: Array.from(data.participants.values()),
-      statistics: {
-        totalTranscripts: data.transcripts.length,
-        totalWords: data.transcripts.reduce((sum, t) => sum + t.text.split(' ').length, 0),
-        averageConfidence: data.transcripts.length > 0 
-          ? data.transcripts.reduce((sum, t) => sum + t.confidence, 0) / data.transcripts.length * 100
-          : 0,
-        duration: Date.now() - data.startTime,
-        participantCount: data.participants.size
-      },
-      metadata: {
-        startTime: data.startTime,
-        endTime: Date.now(),
-        assemblySessionId: data.assemblySessionId
-      }
-    };
     
     // Remove from active transcribers
     activeTranscribers.delete(sessionId);
     
-    console.log(`✅ [STREAMING] Transcription completed for session: ${sessionId}`);
-    console.log(`📊 [STREAMING] Final stats: ${finalTranscript.statistics.totalWords} words, ${finalTranscript.statistics.participantCount} participants`);
+    const finalTranscript = data.transcripts.map(t => t.text).join(' ').trim();
+    const wordCount = data.transcripts.reduce((count, t) => count + (t.words?.length || 0), 0);
     
-    return finalTranscript;
+    console.log(`✅ [STREAMING] Transcription completed for session: ${sessionId}`);
+    console.log(`📊 [STREAMING] Final stats: ${wordCount} words, ${data.participants.size} participants`);
+    
+    return {
+      sessionId,
+      transcripts: data.transcripts,
+      participants: data.participants,
+      finalTranscript,
+      wordCount,
+      duration: Date.now() - data.startTime
+    };
     
   } catch (error) {
-    console.error(`❌ [STREAMING] Failed to stop transcription for ${sessionId}:`, error);
+    console.error(`❌ [STREAMING] Error stopping transcription for ${sessionId}:`, error);
     throw error;
   }
 }
 
 /**
- * Get active transcription sessions
- * @returns {Array} Array of active session IDs
+ * Gets streaming statistics for a session
+ * @param {string} sessionId - Session identifier
+ * @returns {Object} Current streaming stats
  */
-export function getActiveTranscribers() {
-  return Array.from(activeTranscribers.keys());
+export function getStreamingStats(sessionId) {
+  const sessionData = activeTranscribers.get(sessionId);
+  if (!sessionData) {
+    return null;
+  }
+  
+  const { data } = sessionData;
+  return {
+    sessionId: data.sessionId,
+    isConnected: data.isConnected,
+    transcriptCount: data.transcripts.length,
+    participantCount: data.participants.size,
+    duration: Date.now() - data.startTime,
+    lastActivity: data.lastActivity,
+    assemblySessionId: data.assemblySessionId
+  };
 }
 
 /**
- * Get transcription statistics for monitoring
- * @returns {Object} Statistics object
+ * Validates streaming configuration
+ * @returns {boolean} Whether configuration is valid
  */
-export function getStreamingStats() {
-  return {
-    activeTranscribers: activeTranscribers.size,
-    sessions: Array.from(activeTranscribers.entries()).map(([sessionId, data]) => ({
-      sessionId,
-      isConnected: data.data.isConnected,
-      transcriptCount: data.data.transcripts.length,
-      participantCount: data.data.participants.size,
-      duration: Date.now() - data.data.startTime
-    }))
-  };
+export function validateStreamingConfig() {
+  const errors = [];
+  
+  if (!config.apis.assemblyAI) {
+    errors.push('AssemblyAI API key not configured');
+  }
+  
+  if (errors.length > 0) {
+    console.error('❌ [STREAMING] Configuration errors:', errors);
+    return false;
+  }
+  
+  console.log('✅ [STREAMING] Configuration validated');
+  return true;
 }
