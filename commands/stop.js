@@ -1,13 +1,11 @@
 import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
 import { config, embedColors } from '../config.js';
-import { getCurrentRecordingStatus } from './join.js';
-import { stopAllRecordings, processAllRecordings } from '../utils/audioProcessor.js';
-import { transcribeMultipleFiles, combineTranscripts } from '../utils/transcription.js';
+import { getCurrentStreamingStatus } from '../utils/streamingAudioProcessor.js';
+import { stopStreamingSession } from '../utils/streamingAudioProcessor.js';
 import { generateMeetingSummary } from '../utils/summarizer.js';
-import { cleanupRecordingFiles } from '../utils/cleanup.js';
 
 /**
- * Stop Command - Stops recording and processes transcription/summary
+ * Stop Command - Stops streaming recording and processes transcription/summary
  */
 
 export const data = new SlashCommandBuilder()
@@ -17,9 +15,9 @@ export const data = new SlashCommandBuilder()
 
 export async function execute(interaction) {
   try {
-    console.log(`⏹️ Stop command executed by ${interaction.user.tag} in ${interaction.guild.name}`);
+    console.log(`⏹️ [STOP] Stop command executed by ${interaction.user.tag} in ${interaction.guild.name}`);
     
-    // Defer reply for long processing time
+    // Defer reply for processing time
     await interaction.deferReply({ flags: [] });
     
     // Permission check
@@ -30,7 +28,7 @@ export async function execute(interaction) {
     }
     
     // Check if bot is recording
-    const recordingStatus = getCurrentRecordingStatus();
+    const recordingStatus = getCurrentStreamingStatus();
     if (!recordingStatus) {
       return await interaction.editReply({
         embeds: [createErrorEmbed('⚠️ Not Recording', 'Bot is not currently recording. Use `/join` to start a recording first.')]
@@ -41,92 +39,55 @@ export async function execute(interaction) {
     const processingEmbed = new EmbedBuilder()
       .setColor(embedColors.warning)
       .setTitle('⏹️ Recording Stopped')
-      .setDescription('Processing transcription and generating summary...')
+      .setDescription('Processing streaming transcription and generating summary...')
       .addFields(
         { name: '📊 Recording Stats', value: `Duration: ${formatDuration(recordingStatus.duration)}\\nParticipants: ${recordingStatus.participants}`, inline: true },
-        { name: '🔄 Processing Status', value: '• Stopping audio streams...\\n• Converting audio files...\\n• Uploading to AssemblyAI...\\n• Waiting for transcription...\\n• Generating AI summary...', inline: false }
+        { name: '🔄 Processing Status', value: '• Stopping streaming transcription...\\n• Compiling final transcript...\\n• Generating AI summary...', inline: false }
       )
-      .setFooter({ text: 'This may take several minutes depending on recording length' })
+      .setFooter({ text: 'Streaming transcription - processing is much faster!' })
       .setTimestamp();
     
     await interaction.editReply({ embeds: [processingEmbed] });
     
-    let recordingFiles = [];
-    let wavFiles = [];
-    let transcriptionResults = null;
-    let combinedTranscript = null;
+    let finalTranscript = null;
     let meetingSummary = null;
     let processingError = null;
     
     try {
-      // Step 1: Stop all recordings
-      console.log('🔄 Step 1: Stopping all recordings...');
-      recordingFiles = await stopAllRecordings();
+      // Step 1: Stop streaming transcription and get final transcript
+      console.log('🔄 [STOP] Step 1: Stopping streaming transcription...');
+      finalTranscript = await stopStreamingSession(recordingStatus.sessionId);
       
-      if (recordingFiles.length === 0) {
-        throw new Error('No recordings found to process');
+      if (!finalTranscript || !finalTranscript.combinedText || finalTranscript.combinedText.trim().length === 0) {
+        throw new Error('No transcript was generated - no speech was detected during the recording');
       }
+      
+      console.log(`✅ [STOP] Transcript received: ${finalTranscript.statistics.totalWords} words from ${finalTranscript.statistics.participantCount} participants`);
       
       // Update progress
-      await updateProcessingProgress(interaction, 'Stopped recordings', '• ✅ Stopping audio streams\\n• 🔄 Converting audio files...\\n• ⏳ Uploading to AssemblyAI...\\n• ⏳ Waiting for transcription...\\n• ⏳ Generating AI summary...');
+      await updateProcessingProgress(interaction, 'Transcript compiled', '• ✅ Stopping streaming transcription\\n• ✅ Compiling final transcript\\n• 🔄 Generating AI summary...');
       
-      // Step 2: Process audio files (PCM to WAV conversion)
-      console.log('🔄 Step 2: Processing audio files...');
-      wavFiles = await processAllRecordings(recordingFiles);
+      // Step 2: Generate AI summary
+      console.log('🔄 [STOP] Step 2: Generating AI summary...');
+      meetingSummary = await generateMeetingSummary(finalTranscript, {
+        sessionId: recordingStatus.sessionId,
+        duration: recordingStatus.duration,
+        participantCount: finalTranscript.statistics.participantCount
+      });
       
-      if (wavFiles.length === 0) {
-        // If no files converted successfully, try to provide helpful error info
-        const errorMessage = recordingFiles.length > 0 
-          ? `All ${recordingFiles.length} recordings failed to convert to WAV format. This may be due to:\n• Empty PCM files (no audio captured)\n• FFmpeg conversion errors\n• Disk space issues`
-          : 'No recordings found to process';
-        throw new Error(errorMessage);
-      }
-      
-      if (wavFiles.length < recordingFiles.length) {
-        console.warn(`⚠️ Only ${wavFiles.length}/${recordingFiles.length} files converted successfully`);
-      }
-      
-      // Update progress
-      await updateProcessingProgress(interaction, 'Converted audio files', '• ✅ Stopping audio streams\\n• ✅ Converting audio files\\n• 🔄 Uploading to AssemblyAI...\\n• ⏳ Waiting for transcription...\\n• ⏳ Generating AI summary...');
-      
-      // Step 3: Transcribe with AssemblyAI
-      console.log('🔄 Step 3: Transcribing audio...');
-      transcriptionResults = await transcribeMultipleFiles(wavFiles);
-      
-      if (transcriptionResults.successful.length === 0) {
-        throw new Error('No transcriptions were successful');
-      }
-      
-      // Update progress
-      await updateProcessingProgress(interaction, 'Transcription completed', '• ✅ Stopping audio streams\\n• ✅ Converting audio files\\n• ✅ Uploading to AssemblyAI\\n• ✅ Transcription completed\\n• 🔄 Generating AI summary...');
-      
-      // Step 4: Combine transcripts
-      console.log('🔄 Step 4: Combining transcripts...');
-      const meetingMetadata = {
-        startTime: recordingStatus.startTime,
-        endTime: Date.now(),
-        duration: Date.now() - recordingStatus.startTime,
-        channelName: recordingStatus.channelName,
-        initiatedBy: recordingStatus.initiatedBy
-      };
-      
-      combinedTranscript = combineTranscripts(transcriptionResults.successful, meetingMetadata);
-      
-      // Step 5: Generate AI summary
-      console.log('🔄 Step 5: Generating AI summary...');
-      meetingSummary = await generateMeetingSummary(combinedTranscript, meetingMetadata);
+      console.log(`✅ [STOP] Summary generated successfully`);
       
       // Update progress - completed
-      await updateProcessingProgress(interaction, 'Summary generated', '• ✅ Stopping audio streams\\n• ✅ Converting audio files\\n• ✅ Uploading to AssemblyAI\\n• ✅ Transcription completed\\n• ✅ AI summary generated\\n• 🔄 Posting results...');
+      await updateProcessingProgress(interaction, 'Summary generated', '• ✅ Streaming transcription stopped\\n• ✅ Final transcript compiled\\n• ✅ AI summary generated\\n• 🔄 Posting results...');
       
     } catch (error) {
-      console.error('❌ Processing error:', error);
+      console.error('❌ [STOP] Processing error:', error);
       processingError = error.message;
     }
     
     try {
-      // Step 6: Post results to summary channel
-      console.log('🔄 Step 6: Posting results...');
+      // Step 3: Post results to summary channel
+      console.log('🔄 [STOP] Step 3: Posting results...');
       
       const summaryChannel = await interaction.client.channels.fetch(config.discord.summaryChannelId);
       if (!summaryChannel) {
@@ -134,7 +95,7 @@ export async function execute(interaction) {
       }
       
       // Create and send summary embed
-      const summaryEmbed = await createSummaryEmbed(meetingSummary, combinedTranscript, recordingStatus, processingError);
+      const summaryEmbed = await createSummaryEmbed(meetingSummary, finalTranscript, recordingStatus, processingError);
       const summaryMessage = await summaryChannel.send({ embeds: [summaryEmbed] });
       
       // Send status to designated status channel
@@ -154,7 +115,7 @@ export async function execute(interaction) {
           await statusChannel.send({ embeds: [statusEmbed] });
         }
       } catch (error) {
-        console.warn('⚠️ Could not send status message:', error.message);
+        console.warn('⚠️ [STOP] Could not send status message:', error.message);
       }
       
       // Send completion message
@@ -166,57 +127,54 @@ export async function execute(interaction) {
           : `Meeting summary successfully posted in <#${config.discord.summaryChannelId}>`
         )
         .addFields(
-          { name: '📊 Final Stats', value: createFinalStatsText(recordingFiles, transcriptionResults, combinedTranscript), inline: false }
-        );
-      
-      if (processingError) {
-        completionEmbed.addFields({ name: '❌ Error Details', value: processingError.substring(0, 1000), inline: false });
-      }
-      
-      completionEmbed.addFields({ name: '🔗 Summary Link', value: `[View Summary](${summaryMessage.url})`, inline: true });
-      completionEmbed.setTimestamp();
+          { 
+            name: '📊 Final Statistics', 
+            value: finalTranscript 
+              ? `**Words:** ${finalTranscript.statistics.totalWords}\\n**Participants:** ${finalTranscript.statistics.participantCount}\\n**Confidence:** ${finalTranscript.statistics.averageConfidence.toFixed(1)}%`
+              : 'No transcript data available',
+            inline: true 
+          },
+          { 
+            name: '⏱️ Processing Time', 
+            value: `${Math.round((Date.now() - recordingStatus.startTime) / 1000)}s total\\n(Real-time streaming!)`,
+            inline: true 
+          }
+        )
+        .setFooter({ 
+          text: processingError 
+            ? `Error: ${processingError}` 
+            : 'Streaming transcription completed successfully'
+        })
+        .setTimestamp();
       
       await interaction.editReply({ embeds: [completionEmbed] });
       
-      console.log('✅ Stop command completed successfully');
+      console.log(`✅ [STOP] Stop command completed successfully`);
       
     } catch (postError) {
-      console.error('❌ Error posting results:', postError);
+      console.error('❌ [STOP] Failed to post results:', postError);
       
       const errorEmbed = new EmbedBuilder()
         .setColor(embedColors.error)
         .setTitle('❌ Processing Failed')
-        .setDescription('Failed to post summary to designated channel.')
-        .addFields(
-          { name: 'Error Details', value: postError.message.substring(0, 1000), inline: false },
-          { name: 'Raw Data Available', value: combinedTranscript ? 'Transcript data is available for manual review' : 'No transcript data available', inline: false }
-        )
+        .setDescription(`Failed to process recording: ${postError.message}`)
         .setTimestamp();
       
       await interaction.editReply({ embeds: [errorEmbed] });
     }
     
-    // Step 7: Cleanup files
-    try {
-      console.log('🧹 Step 7: Cleaning up temporary files...');
-      const allFiles = [...recordingFiles, ...wavFiles];
-      if (allFiles.length > 0) {
-        await cleanupRecordingFiles(allFiles);
-      }
-    } catch (cleanupError) {
-      console.warn('⚠️ Cleanup error:', cleanupError.message);
-      // Don't fail the entire operation for cleanup errors
-    }
-    
   } catch (error) {
-    console.error('❌ Stop command error:', error);
+    console.error('❌ [STOP] Fatal error in stop command:', error);
     
-    try {
-      await interaction.editReply({
-        embeds: [createErrorEmbed('❌ Command Error', `An unexpected error occurred: ${error.message}`)]
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('❌ Fatal Error', `Failed to process stop command: ${error.message}`)],
+        ephemeral: true
       });
-    } catch (replyError) {
-      console.error('❌ Could not send error reply:', replyError);
+    } else {
+      await interaction.editReply({
+        embeds: [createErrorEmbed('❌ Fatal Error', `Failed to process stop command: ${error.message}`)]
+      });
     }
   }
 }
@@ -225,185 +183,86 @@ export async function execute(interaction) {
  * Updates the processing progress message
  * @param {Object} interaction - Discord interaction
  * @param {string} currentStep - Current step description
- * @param {string} statusList - Updated status list
+ * @param {string} statusText - Status text for the embed
  */
-async function updateProcessingProgress(interaction, currentStep, statusList) {
+async function updateProcessingProgress(interaction, currentStep, statusText) {
   try {
-    const updatedEmbed = new EmbedBuilder()
-      .setColor(embedColors.info)
+    const progressEmbed = new EmbedBuilder()
+      .setColor(embedColors.warning)
       .setTitle('⏹️ Recording Stopped')
-      .setDescription(`Processing transcription and generating summary...\\n\\n**Current Step:** ${currentStep}`)
+      .setDescription(`Processing streaming transcription and generating summary...\\n\\n**Current Step:** ${currentStep}`)
       .addFields(
-        { name: '🔄 Processing Status', value: statusList, inline: false }
+        { name: '🔄 Processing Status', value: statusText, inline: false }
       )
-      .setFooter({ text: 'This may take several minutes depending on recording length' })
+      .setFooter({ text: 'Streaming transcription - much faster than file-based!' })
       .setTimestamp();
     
-    await interaction.editReply({ embeds: [updatedEmbed] });
+    await interaction.editReply({ embeds: [progressEmbed] });
   } catch (error) {
-    console.warn('⚠️ Could not update progress:', error.message);
+    console.warn('⚠️ [STOP] Could not update progress:', error.message);
   }
 }
 
 /**
- * Creates the final summary embed for posting
- * @param {Object} summary - Meeting summary
- * @param {Object} transcript - Combined transcript
- * @param {Object} recordingStatus - Recording status
- * @param {string} error - Processing error if any
+ * Creates a summary embed for the completed transcription
+ * @param {Object} summary - Generated summary
+ * @param {Object} transcript - Final transcript
+ * @param {Object} recordingInfo - Recording information
+ * @param {string} error - Error message if any
  * @returns {EmbedBuilder} Summary embed
  */
-async function createSummaryEmbed(summary, transcript, recordingStatus, error) {
+async function createSummaryEmbed(summary, transcript, recordingInfo, error = null) {
   const embed = new EmbedBuilder()
-    .setColor(error ? embedColors.warning : embedColors.summary)
-    .setTitle(`📝 Meeting Summary - ${new Date().toLocaleDateString()}`)
+    .setColor(error ? embedColors.warning : embedColors.success)
+    .setTitle('📝 Meeting Summary')
     .setTimestamp();
   
   if (error) {
-    embed.setDescription(`⚠️ **Processing completed with errors**\\n\\n${error}`);
+    embed.setDescription(`⚠️ **Processing completed with errors**\\n\\n${error}`)
+         .addFields(
+           { name: '⚠️ Error Details', value: error, inline: false }
+         );
+  } else if (summary && transcript) {
+    // Truncate summary if too long for Discord embed limits
+    const maxSummaryLength = 3000;
+    const summaryText = summary.length > maxSummaryLength 
+      ? summary.substring(0, maxSummaryLength) + '\\n\\n*[Summary truncated for Discord embed limits]*'
+      : summary;
+    
+    embed.setDescription(summaryText)
+         .addFields(
+           { 
+             name: '📊 Statistics', 
+             value: `**Words:** ${transcript.statistics.totalWords}\\n**Participants:** ${transcript.statistics.participantCount}\\n**Confidence:** ${transcript.statistics.averageConfidence.toFixed(1)}%\\n**Duration:** ${formatDuration(recordingInfo.duration)}`,
+             inline: true 
+           },
+           { 
+             name: '👥 Participants', 
+             value: transcript.participants.length > 0 
+               ? transcript.participants.map(p => `• ${p.name || 'Unknown'}`).slice(0, 10).join('\\n')
+               : 'No participants identified',
+             inline: true 
+           }
+         );
+  } else {
+    embed.setDescription('❌ **No transcript or summary available**\\n\\nThe recording may not have captured any speech.');
   }
-  
-  // Add meeting metadata
-  embed.addFields({
-    name: '📊 Meeting Information',
-    value: `**Channel:** ${recordingStatus.channelName}\\n**Duration:** ${formatDuration(recordingStatus.duration)}\\n**Participants:** ${recordingStatus.participants}\\n**Started by:** ${recordingStatus.initiatedBy}`,
-    inline: false
-  });
-  
-  if (summary && !error) {
-    // Add summary sections
-    if (summary.briefOverview) {
-      embed.addFields({
-        name: '📋 Brief Overview',
-        value: summary.briefOverview.substring(0, 1000),
-        inline: false
-      });
-    }
-    
-    if (summary.keyDiscussionPoints && summary.keyDiscussionPoints.length > 0) {
-      const discussionPoints = summary.keyDiscussionPoints
-        .slice(0, 10) // Limit to 10 points
-        .map(point => `• ${point}`)
-        .join('\\n');
-      
-      embed.addFields({
-        name: '💬 Key Discussion Points',
-        value: discussionPoints.substring(0, 1000),
-        inline: false
-      });
-    }
-    
-    if (summary.actionItems && summary.actionItems.length > 0) {
-      const actionItems = summary.actionItems
-        .slice(0, 10)
-        .map(item => `• ${item}`)
-        .join('\\n');
-      
-      embed.addFields({
-        name: '✅ Action Items',
-        value: actionItems.substring(0, 1000),
-        inline: false
-      });
-    }
-    
-    if (summary.decisionsMade && summary.decisionsMade.length > 0) {
-      const decisions = summary.decisionsMade
-        .slice(0, 10)
-        .map(decision => `• ${decision}`)
-        .join('\\n');
-      
-      embed.addFields({
-        name: '🎯 Decisions Made',
-        value: decisions.substring(0, 1000),
-        inline: false
-      });
-    }
-    
-    if (summary.nextSteps) {
-      embed.addFields({
-        name: '➡️ Next Steps',
-        value: summary.nextSteps.substring(0, 1000),
-        inline: false
-      });
-    }
-  }
-  
-  // Add transcript statistics
-  if (transcript) {
-    embed.addFields({
-      name: '📈 Transcript Statistics',
-      value: `**Total Words:** ${transcript.statistics.totalWords}\\n**Average Confidence:** ${transcript.statistics.averageConfidence}%\\n**Processing Time:** ${formatDuration(transcript.meetingMetadata.processingTime)}`,
-      inline: true
-    });
-  }
-  
-  // Add participants info
-  if (transcript && transcript.participants.length > 0) {
-    const participantInfo = transcript.participants
-      .map(p => `**${p.username}:** ${p.wordCount} words`)
-      .join('\\n');
-    
-    embed.addFields({
-      name: '👥 Participant Contributions',
-      value: participantInfo.substring(0, 1000),
-      inline: true
-    });
-  }
-  
-  embed.setFooter({ 
-    text: summary && summary.metadata 
-      ? `Transcribed by AssemblyAI | Summarized by ${summary.metadata.generatedBy}`
-      : 'Transcribed by AssemblyAI | Summary generation failed'
-  });
   
   return embed;
 }
 
 /**
- * Creates final statistics text
- * @param {Array} recordingFiles - Recording files
- * @param {Object} transcriptionResults - Transcription results
- * @param {Object} combinedTranscript - Combined transcript
- * @returns {string} Statistics text
+ * Creates an error embed
+ * @param {string} title - Error title
+ * @param {string} description - Error description
+ * @returns {EmbedBuilder} Error embed
  */
-function createFinalStatsText(recordingFiles, transcriptionResults, combinedTranscript) {
-  const stats = [];
-  
-  if (recordingFiles) {
-    stats.push(`**Recordings:** ${recordingFiles.length} files`);
-  }
-  
-  if (transcriptionResults) {
-    stats.push(`**Transcriptions:** ${transcriptionResults.successful.length} successful, ${transcriptionResults.failed.length} failed`);
-  }
-  
-  if (combinedTranscript) {
-    stats.push(`**Total Words:** ${combinedTranscript.statistics.totalWords}`);
-    stats.push(`**Avg Confidence:** ${combinedTranscript.statistics.averageConfidence}%`);
-  }
-  
-  return stats.join('\\n') || 'No statistics available';
-}
-
-/**
- * Formats duration in milliseconds to readable string
- * @param {number} duration - Duration in milliseconds
- * @returns {string} Formatted duration
- */
-function formatDuration(duration) {
-  if (!duration || duration <= 0) return '0s';
-  
-  const seconds = Math.floor(duration / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  
-  if (hours > 0) {
-    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-  } else if (minutes > 0) {
-    return `${minutes}m ${seconds % 60}s`;
-  } else {
-    return `${seconds}s`;
-  }
+function createErrorEmbed(title, description) {
+  return new EmbedBuilder()
+    .setColor(embedColors.error)
+    .setTitle(title)
+    .setDescription(description)
+    .setTimestamp();
 }
 
 /**
@@ -426,20 +285,20 @@ function hasPermission(interaction) {
 }
 
 /**
- * Creates an error embed
- * @param {string} title - Error title
- * @param {string} description - Error description
- * @returns {EmbedBuilder} Error embed
+ * Formats duration in milliseconds to human readable format
+ * @param {number} ms - Duration in milliseconds
+ * @returns {string} Formatted duration
  */
-function createErrorEmbed(title, description) {
-  return new EmbedBuilder()
-    .setColor(embedColors.error)
-    .setTitle(title)
-    .setDescription(description)
-    .setTimestamp();
+function formatDuration(ms) {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`;
+  } else {
+    return `${seconds}s`;
+  }
 }
-
-export default {
-  data,
-  execute
-};

@@ -1,15 +1,11 @@
 import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
 import { joinVoiceChannel, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import { config, voiceConfig, embedColors } from '../config.js';
-import { createUserAudioStream, getRecordingStats, activeRecordings } from '../utils/audioProcessor.js';
-import { trackFile } from '../utils/cleanup.js';
+import { startStreamingSession, getCurrentStreamingStatus, validateStreamingConfig } from '../utils/streamingAudioProcessor.js';
 
 /**
- * Join Command - Makes the bot join a voice channel and start recording
+ * Join Command - Makes the bot join a voice channel and start streaming transcription
  */
-
-// Global recording state
-let currentRecording = null;
 
 export const data = new SlashCommandBuilder()
   .setName('join')
@@ -18,7 +14,7 @@ export const data = new SlashCommandBuilder()
 
 export async function execute(interaction) {
   try {
-    console.log(`🎤 Join command executed by ${interaction.user.tag} in ${interaction.guild.name}`);
+    console.log(`🎤 [JOIN] Join command executed by ${interaction.user.tag} in ${interaction.guild.name}`);
     
     // Defer reply for processing time
     await interaction.deferReply({ flags: [] });
@@ -30,10 +26,18 @@ export async function execute(interaction) {
       });
     }
     
-    // Check if bot is already recording
-    if (currentRecording && currentRecording.active) {
+    // Validate streaming configuration
+    if (!validateStreamingConfig()) {
       return await interaction.editReply({
-        embeds: [createErrorEmbed('🔴 Already Recording', `Bot is already recording in ${currentRecording.channelName}. Use \`/stop\` to end the current recording first.`)]
+        embeds: [createErrorEmbed('❌ Configuration Error', 'Streaming transcription is not properly configured. Check API keys and settings.')]
+      });
+    }
+    
+    // Check if bot is already recording
+    const currentStatus = getCurrentStreamingStatus();
+    if (currentStatus && currentStatus.active) {
+      return await interaction.editReply({
+        embeds: [createErrorEmbed('🔴 Already Recording', `Bot is already recording. Use \`/stop\` to end the current recording first.`)]
       });
     }
     
@@ -55,7 +59,7 @@ export async function execute(interaction) {
       });
     }
     
-    // Check if there are other users in the channel
+    // Get users in voice channel
     const otherMembers = voiceChannel.members.filter(m => !m.user.bot);
     if (otherMembers.size === 0) {
       return await interaction.editReply({
@@ -65,7 +69,7 @@ export async function execute(interaction) {
     
     try {
       // Join voice channel
-      console.log(`🔗 Connecting to voice channel: ${voiceChannel.name}`);
+      console.log(`🔗 [JOIN] Connecting to voice channel: ${voiceChannel.name}`);
       
       const connection = joinVoiceChannel({
         channelId: voiceChannel.id,
@@ -76,55 +80,36 @@ export async function execute(interaction) {
       
       // Wait for connection to be ready
       await entersState(connection, VoiceConnectionStatus.Ready, 30000);
-      console.log('✅ Voice connection established');
+      console.log('✅ [JOIN] Voice connection established');
       
       // Update bot nickname to indicate recording
       try {
         await botMember.setNickname('🔴 Recording');
       } catch (error) {
-        console.warn('⚠️ Could not update bot nickname:', error.message);
+        console.warn('⚠️ [JOIN] Could not update bot nickname:', error.message);
       }
       
-      // Initialize recording state
-      currentRecording = {
-        guildId: interaction.guild.id,
-        channelId: voiceChannel.id,
-        channelName: voiceChannel.name,
-        connection,
-        startTime: Date.now(),
-        initiatedBy: interaction.user.id,
-        initiatedByTag: interaction.user.tag,
-        participants: new Map(),
-        active: true,
-        maxDuration: config.recording.maxDurationHours * 60 * 60 * 1000,
-        silenceTimer: null
-      };
+      // Create unique session ID
+      const sessionId = `${interaction.guild.id}_${Date.now()}`;
+      const userIds = Array.from(otherMembers.keys());
       
-      // Start recording for current participants
-      const recordingPromises = [];
-      for (const [userId, member] of otherMembers) {
-        if (!member.user.bot) {
-          recordingPromises.push(startUserRecording(connection, userId, member.user.username));
-        }
-      }
+      // Start streaming transcription session
+      console.log(`🎯 [JOIN] Starting streaming session: ${sessionId}`);
+      const streamingSession = await startStreamingSession(sessionId, connection, userIds);
       
-      await Promise.all(recordingPromises);
-      
-      // Set up voice state change listeners
-      setupVoiceStateListeners(interaction.client, voiceChannel.id);
-      
-      // Set up automatic stop timer
-      setupRecordingTimer();
+      console.log(`✅ [JOIN] Streaming session started with ${userIds.length} participants`);
       
       // Send confirmation
       const embed = new EmbedBuilder()
         .setColor(embedColors.recording)
-        .setTitle('🔴 Recording Started')
-        .setDescription(`Recording started in **${voiceChannel.name}**\\nAll participants will be transcribed.`)
+        .setTitle('🔴 Streaming Transcription Started')
+        .setDescription(`Recording started in **${voiceChannel.name}**\\nReal-time transcription is active!`)
         .addFields(
           { name: '👥 Current Participants', value: `${otherMembers.size} users`, inline: true },
           { name: '⏱️ Started By', value: interaction.user.tag, inline: true },
-          { name: '🕐 Started At', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+          { name: '🕐 Started At', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+          { name: '🎯 Session ID', value: `\`${sessionId}\``, inline: false },
+          { name: '⚡ Technology', value: 'AssemblyAI Streaming API\\n(No file storage required!)', inline: true }
         )
         .setFooter({ text: 'Use /stop to end recording and generate summary' })
         .setTimestamp();
@@ -137,64 +122,90 @@ export async function execute(interaction) {
         if (statusChannel) {
           const statusEmbed = new EmbedBuilder()
             .setColor(embedColors.success)
-            .setTitle('🔴 Recording Started')
+            .setTitle('🔴 Streaming Transcription Started')
             .setDescription(`Recording started in **${voiceChannel.name}** by ${interaction.user.tag}`)
             .addFields(
               { name: '👥 Participants', value: `${otherMembers.size} users`, inline: true },
-              { name: '🕐 Started At', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+              { name: '🕐 Started At', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+              { name: '🎯 Session', value: `\`${sessionId}\``, inline: true }
             )
             .setTimestamp();
           
           await statusChannel.send({ embeds: [statusEmbed] });
         }
       } catch (error) {
-        console.warn('⚠️ Could not send status message:', error.message);
+        console.warn('⚠️ [JOIN] Could not send status message:', error.message);
       }
       
-      // Send Discord policy compliance warning to voice channel text chat
-      if (voiceChannel.guild.systemChannel || interaction.channel) {
-        const warningChannel = voiceChannel.guild.systemChannel || interaction.channel;
-        try {
+      // Send Discord policy compliance warning to designated status channel
+      try {
+        const statusChannel = await interaction.client.channels.fetch(config.discord.statusChannelId);
+        if (statusChannel) {
           const warningEmbed = new EmbedBuilder()
             .setColor(embedColors.warning)
             .setTitle('🔴 Voice Recording Active')
-            .setDescription(`**Meeting recording is now active in ${voiceChannel.name}**\\n\\n⚠️ **Important Discord Policy Notice:**\\n• Bot can only record users who actively speak\\n• Recording requires participant awareness and consent\\n• All voice data will be transcribed and summarized\\n• Users can leave the channel to opt out\\n\\n**Technical Note:** If no audio is captured, ensure users are speaking clearly and the bot has proper permissions.`)
+            .setDescription(`**Meeting recording is now active in ${voiceChannel.name}**\\n\\n⚠️ **Important Discord Policy Notice:**\\n• Bot can only record users who actively speak\\n• Recording requires participant awareness and consent\\n• All voice data will be transcribed and summarized\\n• Users can leave the channel to opt out\\n\\n**Technical Note:** If no audio is captured, ensure users are speaking clearly and the bot has proper permissions.\\n\\n✨ **New:** Using streaming transcription for real-time results!`)
             .setFooter({ text: `Started by ${interaction.user.tag} • Use /stop to end recording` })
             .setTimestamp();
           
-          await warningChannel.send({ embeds: [warningEmbed] });
-        } catch (error) {
-          console.warn('⚠️ Could not send recording warning:', error.message);
+          await statusChannel.send({ embeds: [warningEmbed] });
         }
+      } catch (error) {
+        console.warn('⚠️ [JOIN] Could not send recording warning:', error.message);
       }
       
-      console.log(`✅ Recording started successfully in ${voiceChannel.name} with ${otherMembers.size} participants`);
+      console.log(`✅ [JOIN] Join command completed successfully`);
       
     } catch (error) {
-      console.error('❌ Failed to join voice channel:', error);
+      console.error('❌ [JOIN] Failed to set up streaming transcription:', error);
       
-      // Cleanup on failure
-      if (currentRecording) {
-        currentRecording.active = false;
-        currentRecording = null;
+      // Try to reset bot nickname
+      try {
+        await botMember.setNickname(null);
+      } catch (resetError) {
+        console.warn('⚠️ [JOIN] Could not reset bot nickname:', resetError.message);
       }
       
-      return await interaction.editReply({
-        embeds: [createErrorEmbed('❌ Connection Failed', `Failed to join voice channel: ${error.message}`)]
-      });
+      const errorEmbed = new EmbedBuilder()
+        .setColor(embedColors.error)
+        .setTitle('❌ Recording Setup Failed')
+        .setDescription(`Failed to start streaming transcription: ${error.message}`)
+        .addFields(
+          { name: '🔧 Troubleshooting', value: '• Check AssemblyAI API key\\n• Verify voice channel permissions\\n• Ensure stable internet connection\\n• Try again in a few moments', inline: false }
+        )
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [errorEmbed] });
     }
     
   } catch (error) {
-    console.error('❌ Join command error:', error);
+    console.error('❌ [JOIN] Fatal error in join command:', error);
     
-    try {
-      await interaction.editReply({
-        embeds: [createErrorEmbed('❌ Command Error', 'An unexpected error occurred. Please try again.')]
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        embeds: [createErrorEmbed('❌ Fatal Error', `Failed to process join command: ${error.message}`)],
+        ephemeral: true
       });
-    } catch (replyError) {
-      console.error('❌ Could not send error reply:', replyError);
+    } else {
+      await interaction.editReply({
+        embeds: [createErrorEmbed('❌ Fatal Error', `Failed to process join command: ${error.message}`)]
+      });
     }
   }
+}
+
+/**
+ * Creates an error embed
+ * @param {string} title - Error title
+ * @param {string} description - Error description
+ * @returns {EmbedBuilder} Error embed
+ */
+function createErrorEmbed(title, description) {
+  return new EmbedBuilder()
+    .setColor(embedColors.error)
+    .setTitle(title)
+    .setDescription(description)
+    .setTimestamp();
 }
 
 /**
@@ -215,252 +226,3 @@ function hasPermission(interaction) {
   
   return false;
 }
-
-/**
- * Starts recording for a specific user
- * @param {Object} connection - Voice connection
- * @param {string} userId - User ID
- * @param {string} username - Username
- */
-async function startUserRecording(connection, userId, username) {
-  try {
-    const streamInfo = await createUserAudioStream(connection, userId, username);
-    
-    // Track the created file for cleanup
-    trackFile(streamInfo.filePath, {
-      category: 'audio',
-      metadata: { userId, username, recordingId: currentRecording?.startTime }
-    });
-    
-    // Add to current recording participants
-    if (currentRecording) {
-      currentRecording.participants.set(userId, {
-        username,
-        streamInfo,
-        joinTime: Date.now()
-      });
-    }
-    
-    console.log(`🎤 Started recording for ${username} (${userId})`);
-    
-  } catch (error) {
-    console.error(`❌ Failed to start recording for ${username}:`, error);
-  }
-}
-
-/**
- * Sets up listeners for voice state changes (users joining/leaving)
- * @param {Object} client - Discord client
- * @param {string} channelId - Voice channel ID
- */
-function setupVoiceStateListeners(client, channelId) {
-  const voiceStateUpdateHandler = async (oldState, newState) => {
-    // Only handle events for the recording channel
-    if (!currentRecording || !currentRecording.active) return;
-    
-    const recordingChannelId = currentRecording.channelId;
-    
-    // User joined the recording channel
-    if (newState.channelId === recordingChannelId && oldState.channelId !== recordingChannelId) {
-      if (!newState.member.user.bot && currentRecording.connection) {
-        console.log(`👤 ${newState.member.user.tag} joined recording channel`);
-        await startUserRecording(currentRecording.connection, newState.id, newState.member.user.username);
-        resetSilenceTimer();
-      }
-    }
-    
-    // User left the recording channel
-    if (oldState.channelId === recordingChannelId && newState.channelId !== recordingChannelId) {
-      if (!oldState.member.user.bot && currentRecording.participants.has(oldState.id)) {
-        console.log(`👤 ${oldState.member.user.tag} left recording channel`);
-        
-        // Stop recording for this user
-        const streamInfo = activeRecordings.get(oldState.id);
-        if (streamInfo) {
-          await streamInfo.audioStream?.destroy();
-          activeRecordings.delete(oldState.id);
-        }
-        
-        currentRecording.participants.delete(oldState.id);
-        
-        // Check if channel is empty
-        const channel = client.channels.cache.get(recordingChannelId);
-        if (channel) {
-          const remainingUsers = channel.members.filter(m => !m.user.bot);
-          if (remainingUsers.size === 0) {
-            console.log('📭 All users left, starting silence timer');
-            startSilenceTimer(client);
-          }
-        }
-      }
-    }
-  };
-  
-  // Add the event listener
-  client.on('voiceStateUpdate', voiceStateUpdateHandler);
-  
-  // Store the handler for cleanup
-  if (currentRecording) {
-    currentRecording.voiceStateHandler = voiceStateUpdateHandler;
-  }
-}
-
-/**
- * Sets up automatic recording termination timer
- */
-function setupRecordingTimer() {
-  if (!currentRecording) return;
-  
-  const timeout = setTimeout(async () => {
-    if (currentRecording && currentRecording.active) {
-      console.log('⏰ Maximum recording duration reached, stopping recording');
-      
-      try {
-        // Find the original interaction channel for notification
-        const guild = currentRecording.connection.joinConfig.guildId;
-        const client = currentRecording.connection.voiceAdapters.get(guild)?.adapter;
-        // This is a simplified notification - in real implementation, 
-        // you'd want to store the original interaction channel
-        
-        await stopCurrentRecording('Maximum recording duration reached');
-      } catch (error) {
-        console.error('❌ Error in automatic recording stop:', error);
-      }
-    }
-  }, currentRecording.maxDuration);
-  
-  currentRecording.stopTimer = timeout;
-}
-
-/**
- * Starts silence timer (auto-stop if no one in channel)
- * @param {Object} client - Discord client
- */
-function startSilenceTimer(client) {
-  if (!currentRecording || currentRecording.silenceTimer) return;
-  
-  const timeout = setTimeout(async () => {
-    if (currentRecording && currentRecording.active) {
-      // Double-check if channel is still empty
-      const channel = client.channels.cache.get(currentRecording.channelId);
-      if (channel) {
-        const users = channel.members.filter(m => !m.user.bot);
-        if (users.size === 0) {
-          console.log('🔇 Silence timeout reached, stopping recording');
-          await stopCurrentRecording('No participants for extended period');
-        }
-      }
-    }
-  }, config.recording.silenceTimeoutMinutes * 60 * 1000);
-  
-  currentRecording.silenceTimer = timeout;
-}
-
-/**
- * Resets the silence timer when users rejoin
- */
-function resetSilenceTimer() {
-  if (currentRecording && currentRecording.silenceTimer) {
-    clearTimeout(currentRecording.silenceTimer);
-    currentRecording.silenceTimer = null;
-    console.log('🔊 Silence timer reset - users active');
-  }
-}
-
-/**
- * Stops the current recording (used by timers and other systems)
- * @param {string} reason - Reason for stopping
- */
-export async function stopCurrentRecording(reason = 'Unknown') {
-  if (!currentRecording || !currentRecording.active) {
-    return null;
-  }
-  
-  console.log(`⏹️ Stopping current recording: ${reason}`);
-  
-  try {
-    // Mark as inactive
-    currentRecording.active = false;
-    
-    // Clear timers
-    if (currentRecording.stopTimer) {
-      clearTimeout(currentRecording.stopTimer);
-    }
-    if (currentRecording.silenceTimer) {
-      clearTimeout(currentRecording.silenceTimer);
-    }
-    
-    // Remove voice state listener
-    if (currentRecording.voiceStateHandler) {
-      // Note: In a real implementation, you'd want to properly remove the listener
-      // This would require storing the client reference
-    }
-    
-    // Disconnect from voice
-    if (currentRecording.connection) {
-      currentRecording.connection.destroy();
-    }
-    
-    // Reset bot nickname
-    try {
-      const guild = currentRecording.connection?.joinConfig?.guildId;
-      if (guild) {
-        // This would need proper guild/client reference to work
-      }
-    } catch (error) {
-      console.warn('⚠️ Could not reset bot nickname');
-    }
-    
-    const recordingData = { ...currentRecording };
-    currentRecording = null;
-    
-    return recordingData;
-    
-  } catch (error) {
-    console.error('❌ Error stopping recording:', error);
-    currentRecording = null;
-    return null;
-  }
-}
-
-/**
- * Gets current recording status
- * @returns {Object|null} Recording status or null if not recording
- */
-export function getCurrentRecordingStatus() {
-  if (!currentRecording || !currentRecording.active) {
-    return null;
-  }
-  
-  const stats = getRecordingStats();
-  
-  return {
-    channelName: currentRecording.channelName,
-    duration: Date.now() - currentRecording.startTime,
-    participants: currentRecording.participants.size,
-    activeStreams: stats.activeRecordings,
-    startTime: currentRecording.startTime,
-    initiatedBy: currentRecording.initiatedByTag
-  };
-}
-
-/**
- * Creates an error embed
- * @param {string} title - Error title
- * @param {string} description - Error description
- * @returns {EmbedBuilder} Error embed
- */
-function createErrorEmbed(title, description) {
-  return new EmbedBuilder()
-    .setColor(embedColors.error)
-    .setTitle(title)
-    .setDescription(description)
-    .setTimestamp();
-}
-
-export default {
-  data,
-  execute,
-  stopCurrentRecording,
-  getCurrentRecordingStatus
-};

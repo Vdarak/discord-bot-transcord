@@ -65,6 +65,22 @@ export async function execute(interaction) {
     
     await interaction.editReply({ embeds: [embed] });
     
+    // Send help request notification to status channel
+    try {
+      const statusChannel = await interaction.client.channels.fetch(config.discord.statusChannelId);
+      if (statusChannel) {
+        const helpNotification = new EmbedBuilder()
+          .setColor(embedColors.info)
+          .setTitle('❓ Help Requested')
+          .setDescription(`${interaction.user.tag} requested help information`)
+          .setTimestamp();
+        
+        await statusChannel.send({ embeds: [helpNotification] });
+      }
+    } catch (error) {
+      console.warn('⚠️ [HELP] Could not send help notification:', error.message);
+    }
+    
   } catch (error) {
     console.error('❌ Help command error:', error);
     

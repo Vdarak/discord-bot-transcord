@@ -45,10 +45,12 @@ export function initializeGemini() {
  */
 export async function generateMeetingSummary(combinedTranscript, meetingInfo = {}) {
   try {
-    console.log('🤖 Generating meeting summary with Gemini AI...');
+    const startTime = Date.now();
+    console.log(`🤖 [SUMMARY] Starting summary generation with Gemini ${config.gemini.model}`);
     
     // Ensure Gemini is initialized
     if (!model) {
+      console.log(`🔧 [SUMMARY] Initializing Gemini AI...`);
       initializeGemini();
     }
     
@@ -56,6 +58,12 @@ export async function generateMeetingSummary(combinedTranscript, meetingInfo = {
     if (!combinedTranscript.combinedText || combinedTranscript.combinedText.trim().length === 0) {
       throw new Error('No transcript text available for summarization');
     }
+    
+    console.log(`📊 [SUMMARY] Input validation:`);
+    console.log(`   - Transcript length: ${combinedTranscript.combinedText.length} characters`);
+    console.log(`   - Participants: ${combinedTranscript.participants.length}`);
+    console.log(`   - Total words: ${combinedTranscript.statistics.totalWords}`);
+    console.log(`   - Average confidence: ${combinedTranscript.statistics.averageConfidence}%`);
     
     // Prepare the prompt with transcript
     const prompt = `${config.gemini.summaryPrompt}${combinedTranscript.combinedText}

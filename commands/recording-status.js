@@ -1,9 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
-import { getCurrentRecordingStatus } from './join.js';
-import { embedColors } from '../config.js';
-import { getRecordingStats, getMemoryUsage } from '../utils/audioProcessor.js';
-import { getTranscriptionStats } from '../utils/transcription.js';
-import { getCleanupStats } from '../utils/cleanup.js';
+import { getCurrentStreamingStatus, getStreamingSessionStats } from '../utils/streamingAudioProcessor.js';
+import { getStreamingStats } from '../utils/streamingTranscription.js';
+import { embedColors, config } from '../config.js';
 
 /**
  * Recording Status Command - Shows current recording status and statistics
@@ -15,27 +13,25 @@ export const data = new SlashCommandBuilder()
 
 export async function execute(interaction) {
   try {
-    console.log(`📊 Recording status command executed by ${interaction.user.tag}`);
+    console.log(`📊 [STATUS] Recording status command executed by ${interaction.user.tag}`);
     
     await interaction.deferReply({ flags: [64] }); // 64 = EPHEMERAL flag
     
-    const recordingStatus = getCurrentRecordingStatus();
-    const recordingStats = getRecordingStats();
-    const memoryUsage = getMemoryUsage();
-    const transcriptionStats = getTranscriptionStats();
-    const cleanupStats = getCleanupStats();
+    const streamingStatus = getCurrentStreamingStatus();
+    const sessionStats = getStreamingSessionStats();
+    const transcriptionStats = getStreamingStats();
     
-    if (!recordingStatus) {
+    if (!streamingStatus) {
       // Not recording
       const embed = new EmbedBuilder()
         .setColor(embedColors.info)
         .setTitle('🔘 Recording Status: Inactive')
         .setDescription('Bot is not currently recording in any voice channel.')
         .addFields(
-          { name: '📊 System Status', value: `**Memory Usage:** ${memoryUsage.heapUsed} MB\\n**Tracked Files:** ${cleanupStats.trackedFiles}\\n**Active Transcriptions:** ${transcriptionStats.activeTranscriptions}`, inline: true },
-          { name: '🎵 Audio System', value: `**Active Streams:** ${recordingStats.activeRecordings}\\n**System Ready:** ✅`, inline: true }
+          { name: '📊 System Status', value: `**Active Sessions:** ${sessionStats.activeSessions}\\n**Total Streams:** ${sessionStats.totalStreams}\\n**System Ready:** ✅`, inline: true },
+          { name: '⚡ Streaming Mode', value: `**AssemblyAI:** Ready\\n**Real-time:** Enabled\\n**File Storage:** Not needed`, inline: true }
         )
-        .setFooter({ text: 'Use /join to start recording in your voice channel' })
+        .setFooter({ text: 'Use /join to start streaming transcription in your voice channel' })
         .setTimestamp();
       
       return await interaction.editReply({ embeds: [embed] });
@@ -90,6 +86,31 @@ export async function execute(interaction) {
          .setTimestamp();
     
     await interaction.editReply({ embeds: [embed] });
+    
+    // Send status check notification to status channel
+    try {
+      const statusChannel = await interaction.client.channels.fetch(config.discord.statusChannelId);
+      if (statusChannel) {
+        const statusNotification = new EmbedBuilder()
+          .setColor(embedColors.info)
+          .setTitle('📊 Status Check Requested')
+          .setDescription(`${interaction.user.tag} checked recording status`)
+          .addFields(
+            { 
+              name: '📊 Current State', 
+              value: streamingStatus ? 
+                `🔴 **Recording Active**\\nSession: \`${streamingStatus.sessionId}\`\\nDuration: ${formatDuration(streamingStatus.duration)}\\nParticipants: ${streamingStatus.participants}` :
+                `⚪ **No Active Recording**\\nBot is ready to start new session`,
+              inline: false 
+            }
+          )
+          .setTimestamp();
+        
+        await statusChannel.send({ embeds: [statusNotification] });
+      }
+    } catch (error) {
+      console.warn('⚠️ [STATUS] Could not send status notification:', error.message);
+    }
     
   } catch (error) {
     console.error('❌ Recording status command error:', error);
