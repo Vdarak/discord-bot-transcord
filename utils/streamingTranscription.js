@@ -500,12 +500,14 @@ export async function stopStreamingTranscription(sessionId) {
       }
     };
 
+    // Return the final transcript object as the primary result so callers can access
+    // finalTranscript.statistics and finalTranscript.participants (array).
     return {
       sessionId,
-      transcripts: data.transcripts,
-      participants: data.participants,
-      combinedText,
-      finalTranscript: finalTranscriptObject,
+      ...finalTranscriptObject,
+      // keep raw transcripts and maps for internal inspection if needed
+      rawTranscripts: data.transcripts,
+      rawParticipantsMap: data.participants,
       wordCount,
       duration: Date.now() - data.startTime
     };

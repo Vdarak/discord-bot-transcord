@@ -76,7 +76,9 @@ export async function execute(interaction) {
         throw new Error('No transcript was generated - no speech was detected during the recording');
       }
       
-      console.log(`✅ [STOP] Transcript received: ${finalTranscript.statistics.totalWords} words from ${finalTranscript.statistics.participantCount} participants`);
+    const totalWords = finalTranscript?.statistics?.totalWords ?? finalTranscript?.wordCount ?? 0;
+    const participantCount = finalTranscript?.statistics?.participantCount ?? (Array.isArray(finalTranscript?.participants) ? finalTranscript.participants.length : (finalTranscript?.rawParticipantsMap ? Object.keys(finalTranscript.rawParticipantsMap).length : 0));
+    console.log(`✅ [STOP] Transcript received: ${totalWords} words from ${participantCount} participants`);
       
       // Update progress
       await updateProcessingProgress(interaction, 'Transcript compiled', '• ✅ Stopping streaming transcription\\n• ✅ Compiling final transcript\\n• 🔄 Generating AI summary...');
@@ -167,13 +169,35 @@ export async function execute(interaction) {
       
     } catch (postError) {
       console.error('❌ [STOP] Failed to post results:', postError);
-      
+
+      // If we lack access to the configured summary channel, attempt to notify in the status channel instead
+      if (postError && postError.code === 50001) {
+        try {
+          const statusChannel = await interaction.client.channels.fetch(config.discord.statusChannelId);
+          const fallbackEmbed = new EmbedBuilder()
+            .setColor(embedColors.warning)
+            .setTitle('⚠️ Summary Post Failed - Missing Access')
+            .setDescription(`I couldn't post the meeting summary to <#${config.discord.summaryChannelId}> because I don't have access. The summary is attached here instead.`)
+            .addFields(
+              { name: 'Session', value: recordingStatus.sessionId, inline: true },
+              { name: 'Error', value: postError.message, inline: true }
+            )
+            .setTimestamp();
+
+          if (statusChannel) {
+            await statusChannel.send({ embeds: [fallbackEmbed, summaryEmbed] });
+          }
+        } catch (fallbackErr) {
+          console.error('❌ [STOP] Failed to post fallback summary to status channel:', fallbackErr);
+        }
+      }
+
       const errorEmbed = new EmbedBuilder()
         .setColor(embedColors.error)
         .setTitle('❌ Processing Failed')
         .setDescription(`Failed to process recording: ${postError.message}`)
         .setTimestamp();
-      
+
       await interaction.editReply({ embeds: [errorEmbed] });
     }
     
