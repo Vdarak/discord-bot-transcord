@@ -98,7 +98,14 @@ export async function execute(interaction) {
       
     } catch (error) {
       console.error('❌ [STOP] Processing error:', error);
-      processingError = error.message;
+      // Keep the full error object for diagnostics but expose a user-friendly message
+      processingError = error && error.message ? error.message : String(error);
+    }
+
+    // If processing failed and we have no summary, provide a short fallback message so
+    // we can still post something to the summary/status channels instead of failing later.
+    if (processingError && !meetingSummary) {
+      meetingSummary = `Processing failed: ${processingError}`;
     }
     
     try {
@@ -111,8 +118,8 @@ export async function execute(interaction) {
       }
       
       // Create and send summary embed
-      const summaryEmbed = await createSummaryEmbed(meetingSummary, finalTranscript, recordingStatus, processingError);
-      const summaryMessage = await summaryChannel.send({ embeds: [summaryEmbed] });
+  const summaryEmbed = await createSummaryEmbed(meetingSummary, finalTranscript, recordingStatus, processingError);
+  const summaryMessage = await summaryChannel.send({ embeds: [summaryEmbed] });
       
       // Send status to designated status channel
       try {
@@ -134,6 +141,11 @@ export async function execute(interaction) {
         console.warn('⚠️ [STOP] Could not send status message:', error.message);
       }
       
+      // Compute safe stats for the final embed (avoid exceptions if fields missing)
+      const totalWordsSafe = finalTranscript?.statistics?.totalWords ?? finalTranscript?.wordCount ?? 0;
+      const participantCountSafe = finalTranscript?.statistics?.participantCount ?? (Array.isArray(finalTranscript?.participants) ? finalTranscript.participants.length : (finalTranscript?.rawParticipantsMap ? Object.keys(finalTranscript.rawParticipantsMap).length : 0));
+      const avgConfidenceSafe = typeof finalTranscript?.statistics?.averageConfidence === 'number' ? finalTranscript.statistics.averageConfidence : 0;
+
       // Send completion message
       const completionEmbed = new EmbedBuilder()
         .setColor(processingError ? embedColors.warning : embedColors.success)
@@ -146,13 +158,13 @@ export async function execute(interaction) {
           { 
             name: '📊 Final Statistics', 
             value: finalTranscript 
-              ? `**Words:** ${finalTranscript.statistics.totalWords}\\n**Participants:** ${finalTranscript.statistics.participantCount}\\n**Confidence:** ${finalTranscript.statistics.averageConfidence.toFixed(1)}%`
+              ? `**Words:** ${totalWordsSafe}\n**Participants:** ${participantCountSafe}\n**Confidence:** ${avgConfidenceSafe.toFixed(1)}%`
               : 'No transcript data available',
             inline: true 
           },
           { 
             name: '⏱️ Processing Time', 
-            value: `${Math.round((Date.now() - recordingStatus.startTime) / 1000)}s total\\n(Real-time streaming!)`,
+            value: `${Math.round((Date.now() - recordingStatus.startTime) / 1000)}s total\n(Real-time streaming!)`,
             inline: true 
           }
         )
@@ -162,7 +174,7 @@ export async function execute(interaction) {
             : 'Streaming transcription completed successfully'
         })
         .setTimestamp();
-      
+
       await interaction.editReply({ embeds: [completionEmbed] });
       
       console.log(`✅ [STOP] Stop command completed successfully`);
@@ -185,20 +197,32 @@ export async function execute(interaction) {
             .setTimestamp();
 
           if (statusChannel) {
-            await statusChannel.send({ embeds: [fallbackEmbed, summaryEmbed] });
+            // Only include the summary embed if it was successfully created
+            const embedsToSend = [fallbackEmbed];
+            if (typeof summaryEmbed !== 'undefined') embedsToSend.push(summaryEmbed);
+            await statusChannel.send({ embeds: embedsToSend });
           }
         } catch (fallbackErr) {
           console.error('❌ [STOP] Failed to post fallback summary to status channel:', fallbackErr);
         }
       }
 
+      const errorDescription = postError && postError.message ? postError.message : String(postError);
       const errorEmbed = new EmbedBuilder()
         .setColor(embedColors.error)
         .setTitle('❌ Processing Failed')
-        .setDescription(`Failed to process recording: ${postError.message}`)
+        .setDescription(`Failed to process recording: ${errorDescription}`)
+        .addFields(
+          { name: 'Error Code', value: postError && postError.code ? String(postError.code) : 'N/A', inline: true },
+          { name: 'Context', value: `Session: ${recordingStatus.sessionId}`, inline: true }
+        )
         .setTimestamp();
 
-      await interaction.editReply({ embeds: [errorEmbed] });
+      try {
+        await interaction.editReply({ embeds: [errorEmbed] });
+      } catch (editErr) {
+        console.error('❌ [STOP] Failed to edit reply with error embed:', editErr);
+      }
     }
     
   } catch (error) {
@@ -253,26 +277,40 @@ async function createSummaryEmbed(summary, transcript, recordingInfo, error = nu
          );
   } else if (summary && transcript) {
     // Truncate summary if too long for Discord embed limits
+    // Accept either a string summary or a structured summary object returned by generateMeetingSummary
     const maxSummaryLength = 3000;
-    const summaryText = summary.length > maxSummaryLength 
-      ? summary.substring(0, maxSummaryLength) + '\\n\\n*[Summary truncated for Discord embed limits]*'
-      : summary;
-    
-    embed.setDescription(summaryText)
-         .addFields(
-           { 
-             name: '📊 Statistics', 
-             value: `**Words:** ${transcript.statistics.totalWords}\\n**Participants:** ${transcript.statistics.participantCount}\\n**Confidence:** ${transcript.statistics.averageConfidence.toFixed(1)}%\\n**Duration:** ${formatDuration(recordingInfo.duration)}`,
-             inline: true 
-           },
-           { 
-             name: '👥 Participants', 
-             value: transcript.participants.length > 0 
-               ? transcript.participants.map(p => `• ${p.name || 'Unknown'}`).slice(0, 10).join('\\n')
-               : 'No participants identified',
-             inline: true 
-           }
-         );
+    let summaryText = '';
+    if (typeof summary === 'string') {
+      summaryText = summary;
+    } else if (summary && typeof summary === 'object') {
+      // Prefer rawSummary, then briefOverview, then stringify a small portion
+      summaryText = summary.rawSummary || summary.briefOverview || JSON.stringify(summary);
+    } else {
+      summaryText = String(summary || 'No summary available');
+    }
+
+    summaryText = summaryText.length > maxSummaryLength ? summaryText.substring(0, maxSummaryLength) + '\n\n*[Summary truncated for Discord embed limits]*' : summaryText;
+      // Safely extract statistics (some runs may not populate every field)
+      const words = transcript?.statistics?.totalWords ?? transcript?.wordCount ?? 0;
+      const participantsCount = transcript?.statistics?.participantCount ?? (Array.isArray(transcript?.participants) ? transcript.participants.length : (transcript?.rawParticipantsMap ? Object.keys(transcript.rawParticipantsMap).length : 0));
+      const avgConf = typeof transcript?.statistics?.averageConfidence === 'number' ? transcript.statistics.averageConfidence : 0;
+      const participantsList = (Array.isArray(transcript?.participants) && transcript.participants.length > 0)
+        ? transcript.participants.map(p => `• ${p.name || p.username || 'Unknown'}`).slice(0, 10).join('\n')
+        : 'No participants identified';
+
+      embed.setDescription(summaryText)
+           .addFields(
+             { 
+               name: '📊 Statistics', 
+               value: `**Words:** ${words}\n**Participants:** ${participantsCount}\n**Confidence:** ${avgConf.toFixed(1)}%\n**Duration:** ${formatDuration(recordingInfo.duration)}`,
+               inline: true 
+             },
+             { 
+               name: '👥 Participants', 
+               value: participantsList,
+               inline: true 
+             }
+           );
   } else {
     embed.setDescription('❌ **No transcript or summary available**\\n\\nThe recording may not have captured any speech.');
   }
