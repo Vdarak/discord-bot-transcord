@@ -67,17 +67,16 @@ export async function execute(interaction) {
         embeds: [createErrorEmbed('❌ Not in Voice Channel', 'You must be in a voice channel to start recording.')]
       });
     }
-    
+
     const voiceChannel = member.voice.channel;
-    
-    // Check bot permissions in voice channel
+
     const botMember = await interaction.guild.members.fetch(interaction.client.user.id);
     if (!voiceChannel.permissionsFor(botMember).has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
       return await interaction.editReply({
         embeds: [createErrorEmbed('❌ Missing Permissions', `Bot needs Connect and Speak permissions in ${voiceChannel.name}.`)]
       });
     }
-    
+
     // Get users in voice channel
     const otherMembers = voiceChannel.members.filter(m => !m.user.bot);
     if (otherMembers.size === 0) {
@@ -85,7 +84,7 @@ export async function execute(interaction) {
         embeds: [createErrorEmbed('⚠️ Empty Channel', 'No other users found in the voice channel. Recording will start when participants join.')]
       });
     }
-    
+
     try {
       // Join voice channel
       console.log(`🔗 [JOIN] Connecting to voice channel: ${voiceChannel.name}`);
@@ -141,14 +140,15 @@ export async function execute(interaction) {
       }
       
       // Create unique session ID
-      const sessionId = `${interaction.guild.id}_${Date.now()}`;
-      const userIds = Array.from(otherMembers.keys());
+  const sessionId = `${interaction.guild.id}_${Date.now()}`;
+  // Collect user metadata so we can label participants in transcripts
+  const userInfos = Array.from(otherMembers.values()).map(m => ({ id: m.id, displayName: m.displayName, tag: m.user.tag }));
       
       // Start streaming transcription session
       console.log(`🎯 [JOIN] Starting streaming session: ${sessionId}`);
-      const streamingSession = await startStreamingSession(sessionId, connection, userIds);
+  const streamingSession = await startStreamingSession(sessionId, connection, userInfos);
       
-      console.log(`✅ [JOIN] Streaming session started with ${userIds.length} participants`);
+  console.log(`✅ [JOIN] Streaming session started with ${userInfos.length} participants`);
       
       // Send confirmation
       const embed = new EmbedBuilder()

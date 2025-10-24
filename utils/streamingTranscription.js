@@ -42,6 +42,15 @@ export async function createStreamingTranscriber(sessionId, options = {}) {
     if (options.end_of_turn_confidence_threshold) {
       wsUrl.searchParams.set('end_of_turn_confidence_threshold', options.end_of_turn_confidence_threshold.toString());
     }
+    if (options.speakerLabels) {
+      wsUrl.searchParams.set('speaker_labels', 'true');
+    }
+    if (options.punctuate) {
+      wsUrl.searchParams.set('punctuate', 'true');
+    }
+    if (typeof options.disfluencies !== 'undefined') {
+      wsUrl.searchParams.set('disfluencies', options.disfluencies ? 'true' : 'false');
+    }
     
     console.log(`🔗 [STREAMING] Connecting to: ${wsUrl.toString()}`);
     
@@ -64,6 +73,8 @@ export async function createStreamingTranscriber(sessionId, options = {}) {
       assemblySessionId: null,
       expiresAt: null
     };
+    // store configured sample rate so downstream transforms/decoders know the rate
+    transcriptionData.sampleRate = options.sampleRate || 48000;
 
     // Optionally prepare recording to disk
     const saveToDisk = options.saveToDisk || config.recording.saveToDisk || false;
@@ -122,9 +133,24 @@ export async function createStreamingTranscriber(sessionId, options = {}) {
               break;
               
             case 'Turn':
+              // Log full turn message for diagnostics (may include speaker labels)
+              console.log(`💬 [STREAMING] Turn message received: ${JSON.stringify(message)}`);
               if (message.transcript && message.transcript.trim() !== '') {
                 console.log(`💬 [STREAMING] Turn: "${message.transcript}"`);
-                
+
+                // If the message contains a speaker/participant identifier, register it
+                try {
+                  const speakerId = message.participant_id || message.speaker || message.speaker_label || null;
+                  if (speakerId) {
+                    if (!transcriptionData.participants) transcriptionData.participants = new Map();
+                    if (!transcriptionData.participants.has(speakerId)) {
+                      transcriptionData.participants.set(speakerId, { name: speakerId });
+                    }
+                  }
+                } catch (err) {
+                  // ignore participant mapping errors
+                }
+
                 const transcriptEntry = {
                   text: message.transcript,
                   timestamp: Date.now(),
@@ -132,9 +158,10 @@ export async function createStreamingTranscriber(sessionId, options = {}) {
                   isFormatted: message.turn_is_formatted,
                   endOfTurn: message.end_of_turn,
                   confidence: message.end_of_turn_confidence,
-                  words: message.words || []
+                  words: message.words || [],
+                  speakerId: message.participant_id || message.speaker || message.speaker_label || null
                 };
-                
+
                 transcriptionData.transcripts.push(transcriptEntry);
                 transcriptionData.lastActivity = Date.now();
               }
@@ -179,7 +206,7 @@ export async function createStreamingTranscriber(sessionId, options = {}) {
  * @param {string} userId - User ID for the stream
  * @returns {Promise<void>}
  */
-export async function connectAudioStream(sessionId, audioStream, userId) {
+export async function connectAudioStream(sessionId, audioStream, userMeta) {
   try {
     console.log(`🔗 [STREAMING] Connecting audio stream for user ${userId} in session ${sessionId}`);
     
@@ -189,6 +216,26 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     }
 
     const { websocket, data } = sessionData;
+    // Accept either a simple userId string or a user metadata object { id, displayName, tag }
+    let userId = null;
+    let displayName = null;
+    if (typeof userMeta === 'string') {
+      userId = userMeta;
+    } else if (userMeta && typeof userMeta === 'object') {
+      userId = userMeta.id;
+      displayName = userMeta.displayName || userMeta.tag || null;
+    }
+    if (!userId) throw new Error('connectAudioStream requires a user id');
+
+    // Register participant entry so transcripts can include friendly names
+    try {
+      if (!data.participants) data.participants = new Map();
+      if (!data.participants.has(userId)) {
+        data.participants.set(userId, { name: displayName || userId });
+      }
+    } catch (e) {
+      console.warn('⚠️ [STREAMING] Could not register participant metadata:', e.message);
+    }
     
     // Verify WebSocket is open
     if (!data.isConnected || websocket.readyState !== WebSocket.OPEN) {
@@ -210,7 +257,7 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     // Add diagnostic logging for incoming Opus packets (raw input)
     audioStream.on('data', (opusPacket) => {
       try {
-        console.log(`🔔 [OPUS-INPUT] Received opus packet for ${userId}: ${opusPacket.length} bytes`);
+        console.log(`🔔 [OPUS-INPUT] Received opus packet for ${userId} (${displayName || 'unknown'}): ${opusPacket.length} bytes`);
       } catch (err) {
         // ignore logging errors
       }
@@ -219,7 +266,7 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     // Add diagnostic logging on opus decoder output (PCM chunks)
     opusDecoder.on('data', (pcmChunk) => {
       try {
-        console.log(`🎚️ [OPUS-DECODE] Decoded PCM for ${userId}: ${pcmChunk.length} bytes`);
+        console.log(`🎚️ [OPUS-DECODE] Decoded PCM for ${userId} (${displayName || 'unknown'}): ${pcmChunk.length} bytes`);
       } catch (err) {
         // ignore logging errors
       }
@@ -228,7 +275,7 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     // Also log mono transform output sizes for diagnosis
     audioTransform.on('data', (monoChunk) => {
       try {
-        console.log(`🔍 [TRANSFORM] Mono chunk for ${userId}: ${monoChunk.length} bytes`);
+        console.log(`🔍 [TRANSFORM] Mono chunk for ${userId} (${displayName || 'unknown'}): ${monoChunk.length} bytes`);
       } catch (err) {
         // ignore
       }
