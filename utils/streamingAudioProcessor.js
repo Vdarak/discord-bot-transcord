@@ -13,13 +13,13 @@ export const activeStreamingSessions = new Map();
  * Starts a streaming transcription session
  * @param {string} sessionId - Unique session identifier
  * @param {Object} connection - Discord voice connection
- * @param {Array} userInfos - Array of user info objects { id, displayName, tag } to record
+ * @param {Array} userIds - Array of user IDs to record
  * @returns {Promise<Object>} Session information
  */
-export async function startStreamingSession(sessionId, connection, userInfos) {
+export async function startStreamingSession(sessionId, connection, userIds) {
   try {
     console.log(`🎯 [STREAM-AUDIO] Starting streaming session: ${sessionId}`);
-    console.log(`👥 [STREAM-AUDIO] Recording ${userInfos.length} users`);
+    console.log(`👥 [STREAM-AUDIO] Recording ${userIds.length} users`);
     
     // Initialize AssemblyAI client if needed
     initializeStreamingClient();
@@ -39,8 +39,7 @@ export async function startStreamingSession(sessionId, connection, userInfos) {
     // Set up audio streams for each user
     const userStreams = new Map();
     
-    for (const userInfo of userInfos) {
-      const userId = typeof userInfo === 'string' ? userInfo : userInfo.id;
+    for (const userId of userIds) {
       try {
         console.log(`🔗 [STREAM-AUDIO] Setting up stream for user: ${userId}`);
         
@@ -65,14 +64,13 @@ export async function startStreamingSession(sessionId, connection, userInfos) {
           }
         }, 10000);
         
-  // Connect audio stream to transcriber (pass user metadata when available)
-  await connectAudioStream(sessionId, audioStream, userInfo);
+        // Connect audio stream to transcriber
+        await connectAudioStream(sessionId, audioStream, userId);
         
         userStreams.set(userId, {
           audioStream,
           dataReceived: false,
-          startTime: Date.now(),
-          info: userInfo
+          startTime: Date.now()
         });
         
         console.log(`✅ [STREAM-AUDIO] User ${userId} connected to streaming transcription`);
@@ -176,8 +174,8 @@ export async function addUserToStreamingSession(sessionId, userId) {
       end: { behavior: 'manual' }
     });
     
-    // Connect to transcriber (pass minimal userInfo)
-    await connectAudioStream(sessionId, audioStream, { id: userId });
+    // Connect to transcriber
+    await connectAudioStream(sessionId, audioStream, userId);
     
     // Add to session
     sessionInfo.userStreams.set(userId, {
