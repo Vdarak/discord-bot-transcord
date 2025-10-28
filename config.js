@@ -94,8 +94,6 @@ Respond using Markdown formatting (headings and bullet lists). Include the follo
 2. Chronological Sections (for each major topic/time-range): a heading with the approximate timestamp or speaker, followed by 2-6 bullet points describing what was discussed in chronological order.
 3. Key Discussion Points: concise bullet list of the most important topics and takeaways.
 4. Action Items: bullet list with action, assignee (if mentioned), and due date if found in the transcript. Mark items as "Unassigned" when no assignee is detected.
-5. Decisions Made: bullet list of concrete decisions reached during the meeting.
-6. Next Steps: short paragraph with recommended follow-ups.
 
 At the end, add an Appendix labeled "Raw Transcript" and do NOT include the full raw transcript in the same message if it exceeds Discord's message limits; instead indicate that the raw transcript will be attached as a .txt file. Preserve speaker names where available. Keep each sent message under Discord's 2000-character limit (the bot will split messages if necessary). Use clear, chronological bullet points and avoid unnecessary verbosity.
 
