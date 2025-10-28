@@ -110,6 +110,8 @@ Additional Meeting Context:
     
     // Create complete summary object
     const meetingSummary = {
+      // Include an explicit speakerCount field so callers can display participant counts without parsing metadata
+      speakerCount: combinedTranscript.participants ? combinedTranscript.participants.length : (combinedTranscript.statistics?.participantCount || 0),
       ...structuredSummary,
       metadata: {
         generatedAt: Date.now(),

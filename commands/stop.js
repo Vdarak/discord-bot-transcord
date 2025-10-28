@@ -187,36 +187,67 @@ Participants: ${recordingStatus.participants}`, inline: true },
       if (!ms) {
         summaryMarkdown = '**No summary available.**';
       } else if (typeof ms === 'string') {
+        // Assume the summarizer already followed the configured prompt when returning a string
         summaryMarkdown = ms;
       } else {
+        // Build the markdown strictly following the configured prompt in config.gemini.summaryPrompt
         summaryMarkdown += `# 📝 Meeting Summary\n\n`;
-        if (ms.briefOverview) summaryMarkdown += `## 1. Brief Overview\n${ms.briefOverview}\n\n`;
-        if (ms.chronologicalSections && Array.isArray(ms.chronologicalSections)) {
-          summaryMarkdown += `## 2. Chronological Sections\n`;
-          ms.chronologicalSections.forEach(section => {
-            summaryMarkdown += `### ${section.title || section.heading || ''}\n`;
-            if (Array.isArray(section.points)) section.points.forEach(p => summaryMarkdown += `- ${p}\n`);
-            else if (section.content) summaryMarkdown += `${section.content}\n`;
-            summaryMarkdown += '\n';
+
+        // 1. Brief Overview (2-4 sentences)
+        summaryMarkdown += `## 1. Brief Overview\n`;
+        if (ms.briefOverview && typeof ms.briefOverview === 'string' && ms.briefOverview.trim().length > 0) {
+          summaryMarkdown += `${ms.briefOverview.trim()}\n\n`;
+        } else if (ms.rawSummary && typeof ms.rawSummary === 'string' && ms.rawSummary.trim().length > 0) {
+          // fallback to a rawSummary if available
+          summaryMarkdown += `${ms.rawSummary.trim()}\n\n`;
+        } else {
+          summaryMarkdown += `No brief overview available.\n\n`;
+        }
+
+        // 2. Chronological Sections
+        summaryMarkdown += `## 2. Chronological Sections\n`;
+        if (ms.chronologicalSections && Array.isArray(ms.chronologicalSections) && ms.chronologicalSections.length > 0) {
+          ms.chronologicalSections.forEach((section) => {
+            const heading = section.title || section.heading || section.timestamp || section.speaker || 'Untitled Section';
+            summaryMarkdown += `### ${heading}\n`;
+            if (Array.isArray(section.points) && section.points.length > 0) {
+              section.points.forEach(p => {
+                if (p && String(p).trim().length > 0) summaryMarkdown += `- ${String(p).trim()}\n`;
+              });
+            } else if (section.content && String(section.content).trim().length > 0) {
+              // break content into bullet points by sentences to keep concise
+              const bullets = String(section.content).trim().split(/\n|\.\s+/).map(s => s.trim()).filter(Boolean);
+              bullets.slice(0, 6).forEach(b => summaryMarkdown += `- ${b}${b.endsWith('.') ? '' : ''}\n`);
+            } else {
+              summaryMarkdown += `- No details available for this section.\n`;
+            }
+            summaryMarkdown += `\n`;
           });
+        } else {
+          summaryMarkdown += `No chronological sections detected.\n\n`;
         }
-        if (ms.keyDiscussionPoints && ms.keyDiscussionPoints.length) {
-          summaryMarkdown += `## 3. Key Discussion Points\n`;
-          ms.keyDiscussionPoints.forEach(pt => { summaryMarkdown += `- ${pt}\n`; });
-          summaryMarkdown += '\n';
+
+        // 3. Action Items
+        summaryMarkdown += `## 3. Action Items\n`;
+        if (ms.actionItems && Array.isArray(ms.actionItems) && ms.actionItems.length > 0) {
+          ms.actionItems.forEach((ai) => {
+            // Support structured action items or simple strings
+            if (typeof ai === 'string') {
+              summaryMarkdown += `- ${ai}\n`;
+            } else if (ai && typeof ai === 'object') {
+              const actionText = ai.action || ai.title || ai.task || 'Unnamed action';
+              const assignee = ai.assignee || ai.owner || ai.person || 'Unassigned';
+              const due = ai.due || ai.dueDate || ai.due_at || 'No due date';
+              summaryMarkdown += `- ${actionText} — Assignee: ${assignee} — Due: ${due}\n`;
+            }
+          });
+          summaryMarkdown += `\n`;
+        } else {
+          summaryMarkdown += `No action items were detected.\n\n`;
         }
-        if (ms.actionItems && ms.actionItems.length) {
-          summaryMarkdown += `## 4. Action Items\n`;
-          ms.actionItems.forEach(ai => { summaryMarkdown += `- ${ai}\n`; });
-          summaryMarkdown += '\n';
-        }
-        if (ms.decisionsMade && ms.decisionsMade.length) {
-          summaryMarkdown += `## 5. Decisions Made\n`;
-          ms.decisionsMade.forEach(d => { summaryMarkdown += `- ${d}\n`; });
-          summaryMarkdown += '\n';
-        }
-        if (ms.nextSteps) summaryMarkdown += `## 6. Next Steps\n${ms.nextSteps}\n\n`;
-        summaryMarkdown += '**Raw transcript will be attached as a .txt file.**';
+
+        // Appendix: Raw Transcript notice (do not embed full transcript here if large)
+        summaryMarkdown += `---\n\n**Appendix — Raw Transcript**\n\nThe raw transcript will be attached as a separate .txt file.\n`;
       }
 
   // Send the structured summary: attempt a single post, otherwise send first post then continuation posts
@@ -273,7 +304,8 @@ Participants: ${recordingStatus.participants}`, inline: true },
 
       // Send completion message back to the user
       const totalWordsSafe = finalTranscript?.statistics?.totalWords ?? finalTranscript?.wordCount ?? 0;
-      const participantCountSafe = finalTranscript?.statistics?.participantCount ?? (Array.isArray(finalTranscript?.participants) ? finalTranscript.participants.length : (finalTranscript?.rawParticipantsMap ? Object.keys(finalTranscript.rawParticipantsMap).length : 0));
+  // Prefer the live streaming session participant count (Discord voice) as the authoritative value
+  const participantCountSafe = recordingStatus?.participants ?? finalTranscript?.statistics?.participantCount ?? (Array.isArray(finalTranscript?.participants) ? finalTranscript.participants.length : (finalTranscript?.rawParticipantsMap ? Object.keys(finalTranscript.rawParticipantsMap).length : 0));
       const avgConfidenceSafe = typeof finalTranscript?.statistics?.averageConfidence === 'number' ? finalTranscript.statistics.averageConfidence : 0;
 
       const completionEmbed = new EmbedBuilder()
@@ -404,7 +436,7 @@ ${error}`)
     summaryText = summaryText.length > maxSummaryLength ? summaryText.substring(0, maxSummaryLength) + '\n\n*[Summary truncated for Discord embed limits]*' : summaryText;
       // Safely extract statistics (some runs may not populate every field)
       const words = transcript?.statistics?.totalWords ?? transcript?.wordCount ?? 0;
-      const participantsCount = transcript?.statistics?.participantCount ?? (Array.isArray(transcript?.participants) ? transcript.participants.length : (transcript?.rawParticipantsMap ? Object.keys(transcript.rawParticipantsMap).length : 0));
+  const participantsCount = recordingInfo?.participants ?? transcript?.statistics?.participantCount ?? (Array.isArray(transcript?.participants) ? transcript.participants.length : (transcript?.rawParticipantsMap ? Object.keys(transcript.rawParticipantsMap).length : 0));
       const avgConf = typeof transcript?.statistics?.averageConfidence === 'number' ? transcript.statistics.averageConfidence : 0;
       const participantsList = (Array.isArray(transcript?.participants) && transcript.participants.length > 0)
         ? transcript.participants.map(p => `• ${p.name || p.username || 'Unknown'}`).slice(0, 10).join('\n')
@@ -429,14 +461,14 @@ ${error}`)
   
       // Attach raw transcript as a .txt file (safe for large text) to the transcript channel with metadata
       try {
-        const transcriptText = finalTranscript && finalTranscript.combinedText ? finalTranscript.combinedText : (typeof finalTranscript === 'string' ? finalTranscript : JSON.stringify(finalTranscript || {}, null, 2));
+  const transcriptText = transcript && transcript.combinedText ? transcript.combinedText : (typeof transcript === 'string' ? transcript : JSON.stringify(transcript || {}, null, 2));
 
-        const startDate = recordingStatus.startTime ? new Date(recordingStatus.startTime) : new Date();
+  const startDate = recordingInfo?.startTime ? new Date(recordingInfo.startTime) : new Date();
         const endDate = new Date();
         const startCT = startDate.toLocaleString('en-US', { timeZone: 'America/Chicago' });
         const endCT = endDate.toLocaleString('en-US', { timeZone: 'America/Chicago' });
-        const durationStr = recordingStatus.duration ? formatDuration(recordingStatus.duration) : (finalTranscript?.duration ? formatDuration(finalTranscript.duration) : 'Unknown');
-        const speakerCount = Array.isArray(finalTranscript?.participants) ? finalTranscript.participants.length : (finalTranscript?.statistics?.participantCount ?? 0);
+  const durationStr = recordingInfo?.duration ? formatDuration(recordingInfo.duration) : (transcript?.duration ? formatDuration(transcript.duration) : 'Unknown');
+  const speakerCount = recordingInfo?.participants ?? (Array.isArray(transcript?.participants) ? transcript.participants.length : (transcript?.statistics?.participantCount ?? 0));
 
         const header = `Meeting Transcript\nStart (Central Time): ${startCT}\nEnd (Central Time): ${endCT}\nDuration: ${durationStr}\nSpeakers identified: ${speakerCount}\n\n--- RAW TRANSCRIPT BELOW ---\n\n`;
         const fileContent = header + transcriptText;
@@ -454,7 +486,7 @@ ${error}`)
         console.warn('⚠️ [STOP] Could not attach transcript file to transcript channel:', attachErr.message);
         // Fallback: send transcript as multiple messages (code blocks) to transcript channel or summary channel if missing
         try {
-          const transcriptText = finalTranscript && finalTranscript.combinedText ? finalTranscript.combinedText : (typeof finalTranscript === 'string' ? finalTranscript : JSON.stringify(finalTranscript || {}, null, 2));
+          const transcriptText = transcript && transcript.combinedText ? transcript.combinedText : (typeof transcript === 'string' ? transcript : JSON.stringify(transcript || {}, null, 2));
           const CHUNK_MAX = 1990;
           const chunks = splitTextIntoChunks(transcriptText, CHUNK_MAX);
           const MAX_CHUNKS = 50;
