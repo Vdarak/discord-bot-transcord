@@ -476,8 +476,8 @@ ${error}`)
     if (typeof summary === 'string') {
       summaryText = summary;
     } else if (summary && typeof summary === 'object') {
-      // Prefer rawSummary, then briefOverview, then stringify a small portion
-      summaryText = summary.rawSummary || summary.briefOverview || JSON.stringify(summary);
+      // Render the structured summary object into readable, ordered text for embeds
+      summaryText = formatSummaryObject(summary);
     } else {
       summaryText = String(summary || 'No summary available');
     }
@@ -578,5 +578,78 @@ function formatDuration(ms) {
     return `${minutes}m ${seconds % 60}s`;
   } else {
     return `${seconds}s`;
+  }
+}
+
+/**
+ * Formats a structured summary object into readable ordered text suitable for embed descriptions
+ * @param {Object} summary - Structured summary object returned by the summarizer
+ * @returns {string} Formatted text
+ */
+function formatSummaryObject(summary) {
+  try {
+    const parts = [];
+
+    if (summary.title && typeof summary.title === 'string') {
+      parts.push(`**${summary.title.trim()}**`);
+    }
+
+    if (summary.briefOverview && typeof summary.briefOverview === 'string' && summary.briefOverview.trim()) {
+      parts.push(summary.briefOverview.trim());
+    }
+
+    // Chronological / chronologicalSections (ordered)
+    if (Array.isArray(summary.chronologicalSections) && summary.chronologicalSections.length > 0) {
+      parts.push('\n**Chronological Sections:**');
+      for (const sec of summary.chronologicalSections) {
+        const heading = sec.heading || sec.title || sec.timestamp || sec.speaker || null;
+        if (heading) parts.push(`\n**${heading}**`);
+        if (Array.isArray(sec.points) && sec.points.length > 0) {
+          for (const p of sec.points) {
+            if (p && String(p).trim()) parts.push(`• ${String(p).trim()}`);
+          }
+        } else if (sec.content && String(sec.content).trim()) {
+          parts.push(`• ${String(sec.content).trim()}`);
+        }
+      }
+    }
+
+    // Action items
+    if (Array.isArray(summary.actionItems) && summary.actionItems.length > 0) {
+      parts.push('\n**Action Items:**');
+      for (const ai of summary.actionItems) {
+        if (typeof ai === 'string') {
+          if (ai.trim()) parts.push(`• ${ai.trim()}`);
+        } else if (ai && typeof ai === 'object') {
+          const action = ai.action || ai.title || ai.task || '';
+          const assignee = ai.assignee || ai.owner || ai.person || 'Unassigned';
+          const due = ai.due || ai.dueDate || ai.due_at || null;
+          const dueStr = due ? ` — Due: ${due}` : '';
+          if (action) parts.push(`• ${action}${dueStr} — Assignee: ${assignee}`);
+        }
+      }
+    }
+
+    // Decisions
+    if (Array.isArray(summary.decisionsMade) && summary.decisionsMade.length > 0) {
+      parts.push('\n**Decisions Made:**');
+      for (const d of summary.decisionsMade) {
+        if (typeof d === 'string' && d.trim()) parts.push(`• ${d.trim()}`);
+        else if (d && typeof d === 'object' && (d.title || d.decision)) parts.push(`• ${d.title || d.decision}`);
+      }
+    }
+
+    // Next steps
+    if (summary.nextSteps && typeof summary.nextSteps === 'string' && summary.nextSteps.trim()) {
+      parts.push('\n**Next Steps:**');
+      parts.push(summary.nextSteps.trim());
+    }
+
+    const out = parts.join('\n');
+    // Ensure we don't return an empty string
+    return out && out.trim() ? out : (summary.briefOverview || 'No summary available.');
+  } catch (err) {
+    console.warn('⚠️ [STOP] Failed to format structured summary for embed:', err.message || err);
+    return summary.briefOverview || (typeof summary.rawSummary === 'string' ? summary.rawSummary : JSON.stringify(summary || {}, null, 2));
   }
 }
