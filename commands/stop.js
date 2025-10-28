@@ -55,130 +55,177 @@ export async function execute(interaction) {
       .setTitle('⏹️ Recording Stopped')
       .setDescription('Processing streaming transcription and generating summary...')
       .addFields(
-        { name: '📊 Recording Stats', value: `Duration: ${formatDuration(recordingStatus.duration)}\\nParticipants: ${recordingStatus.participants}`, inline: true },
-        { name: '🔄 Processing Status', value: '• Stopping streaming transcription...\\n• Compiling final transcript...\\n• Generating AI summary...', inline: false }
+        { name: '📊 Recording Stats', value: `Duration: ${formatDuration(recordingStatus.duration)}
+Participants: ${recordingStatus.participants}`, inline: true },
+  { name: '🔄 Processing Status', value: `• Stopping streaming transcription...\n• Compiling final transcript...\n• Generating AI summary...`, inline: false }
       )
       .setFooter({ text: 'Streaming transcription - processing is much faster!' })
       .setTimestamp();
     
     await interaction.editReply({ embeds: [processingEmbed] });
     
-    let finalTranscript = null;
-    let meetingSummary = null;
-    let processingError = null;
-    
     try {
-      // Step 1: Stop streaming transcription and get final transcript
-      console.log('🔄 [STOP] Step 1: Stopping streaming transcription...');
-      finalTranscript = await stopStreamingSession(recordingStatus.sessionId);
-      
-      if (!finalTranscript || !finalTranscript.combinedText || finalTranscript.combinedText.trim().length === 0) {
-        throw new Error('No transcript was generated - no speech was detected during the recording');
-      }
-      
-    const totalWords = finalTranscript?.statistics?.totalWords ?? finalTranscript?.wordCount ?? 0;
-    const participantCount = finalTranscript?.statistics?.participantCount ?? (Array.isArray(finalTranscript?.participants) ? finalTranscript.participants.length : (finalTranscript?.rawParticipantsMap ? Object.keys(finalTranscript.rawParticipantsMap).length : 0));
-    console.log(`✅ [STOP] Transcript received: ${totalWords} words from ${participantCount} participants`);
-      
-      // Update progress
-      await updateProcessingProgress(interaction, 'Transcript compiled', '• ✅ Stopping streaming transcription\\n• ✅ Compiling final transcript\\n• 🔄 Generating AI summary...');
-      
-      // Step 2: Generate AI summary
-      console.log('🔄 [STOP] Step 2: Generating AI summary...');
-      meetingSummary = await generateMeetingSummary(finalTranscript, {
-        sessionId: recordingStatus.sessionId,
-        duration: recordingStatus.duration,
-        participantCount: finalTranscript.statistics.participantCount
-      });
-      
-      console.log(`✅ [STOP] Summary generated successfully`);
-      
-      // Update progress - completed
-      await updateProcessingProgress(interaction, 'Summary generated', '• ✅ Streaming transcription stopped\\n• ✅ Final transcript compiled\\n• ✅ AI summary generated\\n• 🔄 Posting results...');
-      
-    } catch (error) {
-      console.error('❌ [STOP] Processing error:', error);
-      // Keep the full error object for diagnostics but expose a user-friendly message
-      processingError = error && error.message ? error.message : String(error);
-    }
-
-    // If processing failed and we have no summary, provide a short fallback message so
-    // we can still post something to the summary/status channels instead of failing later.
-    if (processingError && !meetingSummary) {
-      meetingSummary = `Processing failed: ${processingError}`;
-    }
-    
-    try {
-      // Step 3: Post results to summary channel
+      // Step 3: Post results to summary channel (use explicit target channel)
       console.log('🔄 [STOP] Step 3: Posting results...');
-      
-      const summaryChannel = await interaction.client.channels.fetch(config.discord.summaryChannelId);
-      if (!summaryChannel) {
-        throw new Error(`Summary channel not found: ${config.discord.summaryChannelId}`);
+
+      const targetChannelId = '1432537458993528923';
+      const summaryChannel = await interaction.client.channels.fetch(targetChannelId);
+      if (!summaryChannel) throw new Error(`Summary channel not found: ${targetChannelId}`);
+
+      // Reset presence to idle (best-effort)
+      try {
+        const { setBotState } = await import('../utils/presence.js');
+        await setBotState(interaction.client, 'idle', interaction.guild.id);
+      } catch (e) {
+        console.warn('⚠️ [STOP] Could not reset presence:', e.message);
       }
-      
-      // Create and send summary embed
-  const summaryEmbed = await createSummaryEmbed(meetingSummary, finalTranscript, recordingStatus, processingError);
-  const summaryMessage = await summaryChannel.send({ embeds: [summaryEmbed] });
-      
-      // Send status to designated status channel
+
+      // Helper: split long text into chunks under Discord limit (2000 chars)
+      function splitTextIntoChunks(text, maxLen = 2000) {
+        if (!text) return [];
+        const paragraphs = text.split('\n\n');
+        const chunks = [];
+        let current = '';
+        for (const para of paragraphs) {
+          const candidate = current ? (current + '\n\n' + para) : para;
+          if (candidate.length > maxLen) {
+            if (current) {
+              chunks.push(current);
+              current = '';
+            }
+            if (para.length > maxLen) {
+              for (let i = 0; i < para.length; i += maxLen) {
+                chunks.push(para.slice(i, i + maxLen));
+              }
+            } else {
+              current = para;
+            }
+          } else {
+            current = candidate;
+          }
+        }
+        if (current) chunks.push(current);
+        return chunks;
+      }
+
+      async function sendLongMessage(channel, text) {
+        const chunks = splitTextIntoChunks(text, 2000);
+        if (chunks.length === 0) return null;
+        let last = null;
+        for (const c of chunks) {
+          last = await channel.send({ content: c });
+        }
+        return last;
+      }
+
+      // Build structured markdown summary from meetingSummary
+      let summaryMarkdown = '';
+      if (!meetingSummary) {
+        summaryMarkdown = '**No summary available.**';
+      } else if (typeof meetingSummary === 'string') {
+        summaryMarkdown = meetingSummary;
+      } else {
+        summaryMarkdown += `# 📝 Meeting Summary\n\n`;
+        if (meetingSummary.briefOverview) summaryMarkdown += `## 1. Brief Overview\n${meetingSummary.briefOverview}\n\n`;
+        if (meetingSummary.chronologicalSections && Array.isArray(meetingSummary.chronologicalSections)) {
+          summaryMarkdown += `## 2. Chronological Sections\n`;
+          meetingSummary.chronologicalSections.forEach(section => {
+            summaryMarkdown += `### ${section.title || section.heading || ''}\n`;
+            if (Array.isArray(section.points)) section.points.forEach(p => summaryMarkdown += `- ${p}\n`);
+            else if (section.content) summaryMarkdown += `${section.content}\n`;
+            summaryMarkdown += '\n';
+          });
+        }
+        if (meetingSummary.keyDiscussionPoints && meetingSummary.keyDiscussionPoints.length) {
+          summaryMarkdown += `## 3. Key Discussion Points\n`;
+          meetingSummary.keyDiscussionPoints.forEach(pt => { summaryMarkdown += `- ${pt}\n`; });
+          summaryMarkdown += '\n';
+        }
+        if (meetingSummary.actionItems && meetingSummary.actionItems.length) {
+          summaryMarkdown += `## 4. Action Items\n`;
+          meetingSummary.actionItems.forEach(ai => { summaryMarkdown += `- ${ai}\n`; });
+          summaryMarkdown += '\n';
+        }
+        if (meetingSummary.decisionsMade && meetingSummary.decisionsMade.length) {
+          summaryMarkdown += `## 5. Decisions Made\n`;
+          meetingSummary.decisionsMade.forEach(d => { summaryMarkdown += `- ${d}\n`; });
+          summaryMarkdown += '\n';
+        }
+        if (meetingSummary.nextSteps) summaryMarkdown += `## 6. Next Steps\n${meetingSummary.nextSteps}\n\n`;
+        summaryMarkdown += '**Raw transcript will be attached as a .txt file.**';
+      }
+
+      // Send the structured summary as plain messages (split automatically)
+      await sendLongMessage(summaryChannel, summaryMarkdown);
+
+      // Attach raw transcript as a .txt file (safe for large text)
+      try {
+        const transcriptText = finalTranscript && finalTranscript.combinedText ? finalTranscript.combinedText : (typeof finalTranscript === 'string' ? finalTranscript : JSON.stringify(finalTranscript || {}, null, 2));
+        const buffer = Buffer.from(transcriptText, 'utf-8');
+        await summaryChannel.send({ files: [{ attachment: buffer, name: 'transcript.txt' }] });
+      } catch (attachErr) {
+        console.warn('⚠️ [STOP] Could not attach transcript file:', attachErr.message);
+        // Fallback: send transcript as multiple messages (code blocks) capped to avoid spam
+        try {
+          const transcriptText = finalTranscript && finalTranscript.combinedText ? finalTranscript.combinedText : (typeof finalTranscript === 'string' ? finalTranscript : JSON.stringify(finalTranscript || {}, null, 2));
+          const CHUNK_MAX = 1990;
+          const chunks = splitTextIntoChunks(transcriptText, CHUNK_MAX);
+          const MAX_CHUNKS = 50;
+          if (chunks.length === 0) {
+            await summaryChannel.send({ content: '⚠️ Transcript was empty and could not be attached.' });
+          } else if (chunks.length > MAX_CHUNKS) {
+            await summaryChannel.send({ content: `⚠️ Transcript is very large (${chunks.length} parts). Sending first ${MAX_CHUNKS} parts; the rest is truncated. Consider configuring cloud storage for large transcripts.` });
+            for (let i = 0; i < MAX_CHUNKS; i++) await summaryChannel.send({ content: '```\n' + chunks[i] + '\n```' });
+            await summaryChannel.send({ content: `⚠️ Transcript truncated after ${MAX_CHUNKS} parts.` });
+          } else {
+            await summaryChannel.send({ content: `⚠️ Could not attach transcript as a file. Falling back to sending the transcript in ${chunks.length} message(s).` });
+            for (const c of chunks) await summaryChannel.send({ content: '```\n' + c + '\n```' });
+            await summaryChannel.send({ content: '✅ Full transcript sent (split across multiple messages).' });
+          }
+        } catch (sendErr) {
+          console.error('❌ [STOP] Failed to send transcript fallback messages:', sendErr);
+          await summaryChannel.send({ content: '⚠️ Could not attach or send the full transcript due to size or permission limits. Please check bot logs or configure external storage (S3/Drive) for large transcripts.' });
+        }
+      }
+
+      // Send status to designated status channel (if configured)
       try {
         const statusChannel = await interaction.client.channels.fetch(config.discord.statusChannelId);
         if (statusChannel && statusChannel.id !== summaryChannel.id) {
           const statusEmbed = new EmbedBuilder()
             .setColor(processingError ? embedColors.warning : embedColors.success)
             .setTitle('📝 Recording Processed')
-            .setDescription(`Meeting recording completed and summary generated`)
+            .setDescription('Meeting recording completed and summary generated')
             .addFields(
-              { name: '📊 Stats', value: `Duration: ${formatDuration(recordingStatus.duration)}\\nParticipants: ${recordingStatus.participants}`, inline: true },
-              { name: '📝 Summary', value: `Posted in <#${config.discord.summaryChannelId}>`, inline: true }
+              { name: '📊 Stats', value: `Duration: ${formatDuration(recordingStatus.duration)}\nParticipants: ${recordingStatus.participants}`, inline: true },
+              { name: '📝 Summary', value: `Posted in <#${targetChannelId}>`, inline: true }
             )
             .setTimestamp();
-          
           await statusChannel.send({ embeds: [statusEmbed] });
         }
-      } catch (error) {
-        console.warn('⚠️ [STOP] Could not send status message:', error.message);
+      } catch (err) {
+        console.warn('⚠️ [STOP] Could not send status message:', err.message);
       }
-      
-      // Compute safe stats for the final embed (avoid exceptions if fields missing)
+
+      // Send completion message back to the user
       const totalWordsSafe = finalTranscript?.statistics?.totalWords ?? finalTranscript?.wordCount ?? 0;
       const participantCountSafe = finalTranscript?.statistics?.participantCount ?? (Array.isArray(finalTranscript?.participants) ? finalTranscript.participants.length : (finalTranscript?.rawParticipantsMap ? Object.keys(finalTranscript.rawParticipantsMap).length : 0));
       const avgConfidenceSafe = typeof finalTranscript?.statistics?.averageConfidence === 'number' ? finalTranscript.statistics.averageConfidence : 0;
 
-      // Send completion message
       const completionEmbed = new EmbedBuilder()
         .setColor(processingError ? embedColors.warning : embedColors.success)
         .setTitle(processingError ? '⚠️ Processing Completed with Errors' : '✅ Processing Complete')
-        .setDescription(processingError 
-          ? `Recording processed with errors. Summary posted in <#${config.discord.summaryChannelId}>`
-          : `Meeting summary successfully posted in <#${config.discord.summaryChannelId}>`
-        )
+        .setDescription(processingError ? `Recording processed with errors. Summary posted in <#${targetChannelId}>` : `Meeting summary successfully posted in <#${targetChannelId}>`)
         .addFields(
-          { 
-            name: '📊 Final Statistics', 
-            value: finalTranscript 
-              ? `**Words:** ${totalWordsSafe}\n**Participants:** ${participantCountSafe}\n**Confidence:** ${avgConfidenceSafe.toFixed(1)}%`
-              : 'No transcript data available',
-            inline: true 
-          },
-          { 
-            name: '⏱️ Processing Time', 
-            value: `${Math.round((Date.now() - recordingStatus.startTime) / 1000)}s total\n(Real-time streaming!)`,
-            inline: true 
-          }
+          { name: '📊 Final Statistics', value: finalTranscript ? `**Words:** ${totalWordsSafe}\n**Participants:** ${participantCountSafe}\n**Confidence:** ${avgConfidenceSafe.toFixed(1)}%` : 'No transcript data available', inline: true },
+          { name: '⏱️ Processing Time', value: `${Math.round((Date.now() - recordingStatus.startTime) / 1000)}s total\n(Real-time streaming!)`, inline: true }
         )
-        .setFooter({ 
-          text: processingError 
-            ? `Error: ${processingError}` 
-            : 'Streaming transcription completed successfully'
-        })
+        .setFooter({ text: processingError ? `Error: ${processingError}` : 'Streaming transcription completed successfully' })
         .setTimestamp();
 
       await interaction.editReply({ embeds: [completionEmbed] });
-      
-      console.log(`✅ [STOP] Stop command completed successfully`);
-      
+      console.log('✅ [STOP] Stop command completed successfully');
+
     } catch (postError) {
       console.error('❌ [STOP] Failed to post results:', postError);
 
@@ -189,7 +236,7 @@ export async function execute(interaction) {
           const fallbackEmbed = new EmbedBuilder()
             .setColor(embedColors.warning)
             .setTitle('⚠️ Summary Post Failed - Missing Access')
-            .setDescription(`I couldn't post the meeting summary to <#${config.discord.summaryChannelId}> because I don't have access. The summary is attached here instead.`)
+            .setDescription(`I couldn't post the meeting summary to the configured summary channel because I don't have access. The summary may be attached here instead if available.`)
             .addFields(
               { name: 'Session', value: recordingStatus.sessionId, inline: true },
               { name: 'Error', value: postError.message, inline: true }
@@ -197,10 +244,7 @@ export async function execute(interaction) {
             .setTimestamp();
 
           if (statusChannel) {
-            // Only include the summary embed if it was successfully created
-            const embedsToSend = [fallbackEmbed];
-            if (typeof summaryEmbed !== 'undefined') embedsToSend.push(summaryEmbed);
-            await statusChannel.send({ embeds: embedsToSend });
+            await statusChannel.send({ embeds: [fallbackEmbed] });
           }
         } catch (fallbackErr) {
           console.error('❌ [STOP] Failed to post fallback summary to status channel:', fallbackErr);

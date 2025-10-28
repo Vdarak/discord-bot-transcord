@@ -2,6 +2,7 @@ import { Client, Collection, Events, GatewayIntentBits, REST, Routes, ActivityTy
 import { createServer } from 'http';
 import { config, validateConfig, logConfig } from './config.js';
 import { initializeGemini, testGeminiConnection } from './utils/summarizer.js';
+import { setBotState } from './utils/presence.js';
 import { validateStreamingConfig, stopAllStreamingSessions } from './utils/streamingAudioProcessor.js';
 import { initializeStreamingClient } from './utils/streamingTranscription.js';
 import { promises as fs } from 'fs';
@@ -157,6 +158,12 @@ function setupEventHandlers() {
     }
     
     console.log('🟢 Bot is fully operational!');
+    // Ensure the bot has a consistent default name and neutral presence
+    try {
+      await setBotState(client, 'idle');
+    } catch (err) {
+      console.warn('⚠️ Could not set initial bot state:', err.message);
+    }
   });
   
   // Slash command interaction handler

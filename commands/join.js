@@ -133,11 +133,12 @@ export async function execute(interaction) {
         return; // stop further setup
       }
       
-      // Update bot nickname to indicate recording
+      // Update global presence and guild nickname to indicate recording
       try {
-        await botMember.setNickname('🔴 Recording');
+        const { setBotState } = await import('../utils/presence.js');
+        await setBotState(interaction.client, 'recording', interaction.guild.id);
       } catch (error) {
-        console.warn('⚠️ [JOIN] Could not update bot nickname:', error.message);
+        console.warn('⚠️ [JOIN] Could not update bot presence/nickname:', error.message);
       }
       
       // Create unique session ID
@@ -210,11 +211,12 @@ export async function execute(interaction) {
     } catch (error) {
       console.error('❌ [JOIN] Failed to set up streaming transcription:', error);
       
-      // Try to reset bot nickname
+      // Try to reset bot presence/nickname to idle
       try {
-        await botMember.setNickname(null);
+        const { setBotState } = await import('../utils/presence.js');
+        await setBotState(interaction.client, 'idle', interaction.guild.id);
       } catch (resetError) {
-        console.warn('⚠️ [JOIN] Could not reset bot nickname:', resetError.message);
+        console.warn('⚠️ [JOIN] Could not reset bot presence/nickname:', resetError.message);
       }
       
       const errorEmbed = new EmbedBuilder()

@@ -76,8 +76,27 @@ Additional Meeting Context:
     
     console.log(`📊 Sending ${combinedTranscript.combinedText.length} characters to Gemini for analysis`);
     
+    // Decide which Gemini model to use. For very large transcripts, try the configured largeModel.
+    let modelToUse = model;
+    try {
+      const transcriptLength = combinedTranscript.combinedText.length;
+      if (config.gemini.largeModel && transcriptLength > (config.gemini.largeInputThreshold || 0) && config.gemini.largeModel !== config.gemini.model) {
+        console.log(`🔎 [SUMMARY] Large transcript detected (${transcriptLength} chars). Using large model: ${config.gemini.largeModel}`);
+        modelToUse = genAI.getGenerativeModel({
+          model: config.gemini.largeModel,
+          generationConfig: {
+            temperature: config.gemini.temperature,
+            maxOutputTokens: config.gemini.maxTokens
+          }
+        });
+      }
+    } catch (modelSelectErr) {
+      console.warn('⚠️ Could not select large model, falling back to configured model:', modelSelectErr.message);
+      modelToUse = model;
+    }
+
     // Generate summary
-    const result = await model.generateContent(prompt);
+    const result = await modelToUse.generateContent(prompt);
     const summaryText = result.response.text();
     
     if (!summaryText || summaryText.trim().length === 0) {
