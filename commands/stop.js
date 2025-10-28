@@ -104,9 +104,12 @@ Participants: ${recordingStatus.participants}`, inline: true },
       // Step 3: Post results to summary channel (use explicit target channel)
       console.log('🔄 [STOP] Step 3: Posting results...');
 
-      const targetChannelId = '1432537458993528923';
-      const summaryChannel = await interaction.client.channels.fetch(targetChannelId);
+  const targetChannelId = config.discord.summaryChannelId || '1431024855385374802';
+  const summaryChannel = await interaction.client.channels.fetch(targetChannelId);
+  const transcriptChannelId = config.discord.transcriptChannelId || '1432537458993528923';
+  const transcriptChannel = await interaction.client.channels.fetch(transcriptChannelId);
       if (!summaryChannel) throw new Error(`Summary channel not found: ${targetChannelId}`);
+    if (!transcriptChannel) console.warn(`⚠️ Transcript channel not found: ${transcriptChannelId} - will attempt to send to summary channel instead`);
 
       // Reset presence to idle (best-effort)
       try {
@@ -154,6 +157,30 @@ Participants: ${recordingStatus.participants}`, inline: true },
         return last;
       }
 
+      // Try to send the summary as a single "post" (single message). If too large, send the first post
+      // then subsequent continuation posts. Use paragraph-aware splitting to avoid breaking numbering.
+      async function sendAsPostThenContinue(channel, text) {
+        if (!text) return null;
+        // If text fits in one message, send it
+        if (text.length <= 2000) {
+          return await channel.send({ content: text });
+        }
+
+        const chunks = splitTextIntoChunks(text, 2000);
+        if (chunks.length === 0) return null;
+
+        // Send first chunk as the initial post
+        let first = await channel.send({ content: chunks[0] });
+
+        // Send remaining chunks as continuation posts, marking them as continued so hierarchy is clear
+        for (let i = 1; i < chunks.length; i++) {
+          const contHeader = `**(continued — part ${i + 1} of ${chunks.length})**\n\n`;
+          await channel.send({ content: contHeader + chunks[i] });
+        }
+
+        return first;
+      }
+
       // Build structured markdown summary from meetingSummary (defensive: handle undefined)
       const ms = (typeof meetingSummary !== 'undefined') ? meetingSummary : null;
       let summaryMarkdown = '';
@@ -192,8 +219,8 @@ Participants: ${recordingStatus.participants}`, inline: true },
         summaryMarkdown += '**Raw transcript will be attached as a .txt file.**';
       }
 
-      // Send the structured summary as plain messages (split automatically)
-      await sendLongMessage(summaryChannel, summaryMarkdown);
+  // Send the structured summary: attempt a single post, otherwise send first post then continuation posts
+  await sendAsPostThenContinue(summaryChannel, summaryMarkdown);
 
       // Attach raw transcript as a .txt file (safe for large text)
       try {
@@ -324,7 +351,9 @@ async function updateProcessingProgress(interaction, currentStep, statusText) {
     const progressEmbed = new EmbedBuilder()
       .setColor(embedColors.warning)
       .setTitle('⏹️ Recording Stopped')
-      .setDescription(`Processing streaming transcription and generating summary...\\n\\n**Current Step:** ${currentStep}`)
+      .setDescription(`Processing streaming transcription and generating summary...
+
+**Current Step:** ${currentStep}`)
       .addFields(
         { name: '🔄 Processing Status', value: statusText, inline: false }
       )
@@ -352,7 +381,9 @@ async function createSummaryEmbed(summary, transcript, recordingInfo, error = nu
     .setTimestamp();
   
   if (error) {
-    embed.setDescription(`⚠️ **Processing completed with errors**\\n\\n${error}`)
+    embed.setDescription(`⚠️ **Processing completed with errors**
+
+${error}`)
          .addFields(
            { name: '⚠️ Error Details', value: error, inline: false }
          );
@@ -393,41 +424,59 @@ async function createSummaryEmbed(summary, transcript, recordingInfo, error = nu
              }
            );
   } else {
-    embed.setDescription('❌ **No transcript or summary available**\\n\\nThe recording may not have captured any speech.');
+  embed.setDescription('❌ **No transcript or summary available**\n\nThe recording may not have captured any speech.');
   }
   
-  return embed;
-}
+      // Attach raw transcript as a .txt file (safe for large text) to the transcript channel with metadata
+      try {
+        const transcriptText = finalTranscript && finalTranscript.combinedText ? finalTranscript.combinedText : (typeof finalTranscript === 'string' ? finalTranscript : JSON.stringify(finalTranscript || {}, null, 2));
 
-/**
- * Creates an error embed
- * @param {string} title - Error title
- * @param {string} description - Error description
- * @returns {EmbedBuilder} Error embed
- */
-function createErrorEmbed(title, description) {
-  return new EmbedBuilder()
-    .setColor(embedColors.error)
-    .setTitle(title)
-    .setDescription(description)
-    .setTimestamp();
-}
+        const startDate = recordingStatus.startTime ? new Date(recordingStatus.startTime) : new Date();
+        const endDate = new Date();
+        const startCT = startDate.toLocaleString('en-US', { timeZone: 'America/Chicago' });
+        const endCT = endDate.toLocaleString('en-US', { timeZone: 'America/Chicago' });
+        const durationStr = recordingStatus.duration ? formatDuration(recordingStatus.duration) : (finalTranscript?.duration ? formatDuration(finalTranscript.duration) : 'Unknown');
+        const speakerCount = Array.isArray(finalTranscript?.participants) ? finalTranscript.participants.length : (finalTranscript?.statistics?.participantCount ?? 0);
 
-/**
- * Checks if user has permission to use the command
- * @param {Object} interaction - Discord interaction
- * @returns {boolean} True if user has permission
- */
-function hasPermission(interaction) {
-  // Check for Manage Channels permission
-  if (interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    return true;
-  }
-  
-  // Check for specific role if configured
-  if (config.discord.allowedRoleId) {
-    return interaction.member.roles.cache.has(config.discord.allowedRoleId);
-  }
+        const header = `Meeting Transcript\nStart (Central Time): ${startCT}\nEnd (Central Time): ${endCT}\nDuration: ${durationStr}\nSpeakers identified: ${speakerCount}\n\n--- RAW TRANSCRIPT BELOW ---\n\n`;
+        const fileContent = header + transcriptText;
+        const startIso = startDate.toISOString().slice(0,19).replace(/[:T]/g,'-');
+        const filename = `transcript-${startIso}.txt`;
+
+        const buffer = Buffer.from(fileContent, 'utf-8');
+        if (transcriptChannel) {
+          await transcriptChannel.send({ content: `📁 Transcript attached for session (started ${startCT} Central Time).`, files: [{ attachment: buffer, name: filename }] });
+        } else {
+          // If transcript channel missing, send to summary channel as fallback
+          await summaryChannel.send({ content: `📁 Transcript attached for session (started ${startCT} Central Time).`, files: [{ attachment: buffer, name: filename }] });
+        }
+      } catch (attachErr) {
+        console.warn('⚠️ [STOP] Could not attach transcript file to transcript channel:', attachErr.message);
+        // Fallback: send transcript as multiple messages (code blocks) to transcript channel or summary channel if missing
+        try {
+          const transcriptText = finalTranscript && finalTranscript.combinedText ? finalTranscript.combinedText : (typeof finalTranscript === 'string' ? finalTranscript : JSON.stringify(finalTranscript || {}, null, 2));
+          const CHUNK_MAX = 1990;
+          const chunks = splitTextIntoChunks(transcriptText, CHUNK_MAX);
+          const MAX_CHUNKS = 50;
+          const outChannel = transcriptChannel || summaryChannel;
+
+          if (chunks.length === 0) {
+            await outChannel.send({ content: '⚠️ Transcript was empty and could not be attached.' });
+          } else if (chunks.length > MAX_CHUNKS) {
+            await outChannel.send({ content: `⚠️ Transcript is very large (${chunks.length} parts). Sending first ${MAX_CHUNKS} parts; the rest is truncated. Consider configuring cloud storage for large transcripts.` });
+            for (let i = 0; i < MAX_CHUNKS; i++) await outChannel.send({ content: '```\n' + chunks[i] + '\n```' });
+            await outChannel.send({ content: `⚠️ Transcript truncated after ${MAX_CHUNKS} parts.` });
+          } else {
+            await outChannel.send({ content: `⚠️ Could not attach transcript as a file. Falling back to sending the transcript in ${chunks.length} message(s).` });
+            for (const c of chunks) await outChannel.send({ content: '```\n' + c + '\n```' });
+            await outChannel.send({ content: '✅ Full transcript sent (split across multiple messages).' });
+          }
+        } catch (sendErr) {
+          console.error('❌ [STOP] Failed to send transcript fallback messages:', sendErr);
+          const outChannel = transcriptChannel || summaryChannel;
+          await outChannel.send({ content: '⚠️ Could not attach or send the full transcript due to size or permission limits. Please check bot logs or configure external storage (S3/Drive) for large transcripts.' });
+        }
+      }
   
   return false;
 }

@@ -9,8 +9,8 @@ import 'dotenv/config';
 const requiredEnvVars = {
   DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN,
   ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY,
-  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-  SUMMARY_CHANNEL_ID: process.env.SUMMARY_CHANNEL_ID
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY
+  // SUMMARY_CHANNEL_ID is optional because a sensible default is provided below
 };
 
 // Check for missing required variables
@@ -30,8 +30,9 @@ export const config = {
   // Discord Bot Settings
   discord: {
     token: process.env.DISCORD_BOT_TOKEN,
-    summaryChannelId: '1431024855385374802', // Channel for meeting summaries ONLY
-    statusChannelId: '1431006332147863705', // Channel for bot status messages
+  summaryChannelId: process.env.SUMMARY_CHANNEL_ID || '1431024855385374802', // Channel for meeting summaries ONLY
+  transcriptChannelId: process.env.TRANSCRIPT_CHANNEL_ID || '1432537458993528923', // Channel where raw transcripts are attached
+  statusChannelId: process.env.STATUS_CHANNEL_ID || '1431006332147863705', // Channel for bot status messages
     allowedRoleId: process.env.ALLOWED_ROLE_ID || null,
     clientId: process.env.DISCORD_CLIENT_ID || null
   },
@@ -92,13 +93,14 @@ Respond using Markdown formatting (headings and bullet lists). Include the follo
 
 1. Brief Overview (2-4 sentences): high-level summary of the meeting's purpose and outcome.
 2. Chronological Sections (for each major topic/time-range): a heading with the approximate timestamp or speaker, followed by 2-6 bullet points describing what was discussed in chronological order.
-3. Key Discussion Points: concise bullet list of the most important topics and takeaways.
-4. Action Items: bullet list with action, assignee (if mentioned), and due date if found in the transcript. Mark items as "Unassigned" when no assignee is detected.
+3. Action Items: bullet list with action, assignee (if mentioned), and due date if found in the transcript. Mark items as "Unassigned" when no assignee is detected.
 
-At the end, add an Appendix labeled "Raw Transcript" and do NOT include the full raw transcript in the same message if it exceeds Discord's message limits; instead indicate that the raw transcript will be attached as a .txt file. Preserve speaker names where available. Keep each sent message under Discord's 2000-character limit (the bot will split messages if necessary). Use clear, chronological bullet points and avoid unnecessary verbosity.
+At the end, add an Appendix labeled "Raw Transcript" and do NOT include the full raw transcript in the same message if it exceeds Discord's message limits; instead indicate that the raw transcript will be attached as a .txt file. Preserve speaker names where available.(the bot will split large summaries if necessary). Use clear, chronological bullet points and avoid unnecessary verbosity.
 
 Meeting Transcript:
 `
+
+  
   },
 
   // Server Settings
