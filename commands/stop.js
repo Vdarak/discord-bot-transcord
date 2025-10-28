@@ -269,6 +269,31 @@ Participants: ${recordingStatus.participants}`, inline: true },
         if (!contentToPost || contentToPost.trim().length === 0) contentToPost = 'No summary available.';
       }
 
+      // Safety: if contentToPost looks like raw JSON (starts with '{' or '['), convert it
+      // to the formatted three-section text so we never post raw JSON to the channel.
+      function looksLikeJson(s) {
+        if (!s || typeof s !== 'string') return false;
+        const t = s.trim();
+        return t.startsWith('{') || t.startsWith('[') || /"briefOverview"|briefOverview/i.test(t);
+      }
+
+      if (looksLikeJson(contentToPost)) {
+        try {
+          // Try to parse; if it's an object already stringified, parse and format
+          const parsed = JSON.parse(contentToPost);
+          contentToPost = formatSummaryObject(parsed);
+        } catch (e) {
+          // If parsing fails, attempt best-effort extraction from the raw string
+          try {
+            contentToPost = formatSummaryFromRawString(contentToPost);
+          } catch (e2) {
+            // As a last resort, produce a safe fallback excerpt (no raw JSON)
+            const safeExcerpt = String(contentToPost).replace(/```/g, '').slice(0, 1000);
+            contentToPost = '**Summary unavailable (unparseable AI output)**\n' + (safeExcerpt ? (`\n\nExcerpt:\n` + safeExcerpt + (safeExcerpt.length >= 1000 ? '\n\n*[Excerpt truncated]*' : '')) : '\nNo readable excerpt available.');
+          }
+        }
+      }
+
       const firstSummaryMessage = await sendAsPostThenContinue(summaryChannel, contentToPost);
   try {
     if (firstSummaryMessage && typeof firstSummaryMessage.crosspost === 'function') {
