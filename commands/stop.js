@@ -104,7 +104,8 @@ Participants: ${recordingStatus.participants}`, inline: true },
       // Step 3: Post results to summary channel (use explicit target channel)
       console.log('🔄 [STOP] Step 3: Posting results...');
 
-  const targetChannelId = config.discord.summaryChannelId || '1431024855385374802';
+  // Always post summaries to the canonical summary channel ID requested
+  const targetChannelId = '1431024855385374802';
   const summaryChannel = await interaction.client.channels.fetch(targetChannelId);
   const transcriptChannelId = config.discord.transcriptChannelId || '1432537458993528923';
   const transcriptChannel = await interaction.client.channels.fetch(transcriptChannelId);
@@ -161,21 +162,38 @@ Participants: ${recordingStatus.participants}`, inline: true },
       // then subsequent continuation posts. Use paragraph-aware splitting to avoid breaking numbering.
       async function sendAsPostThenContinue(channel, text) {
         if (!text) return null;
-        // If text fits in one message, send it
-        if (text.length <= 2000) {
-          return await channel.send({ content: text });
-        }
 
-        const chunks = splitTextIntoChunks(text, 2000);
+        // Use embed-friendly chunk size (embed description limit is 4096)
+        const MAX_EMBED_DESC = 3800;
+        const chunks = splitTextIntoChunks(text, MAX_EMBED_DESC);
         if (chunks.length === 0) return null;
 
-        // Send first chunk as the initial post
-        let first = await channel.send({ content: chunks[0] });
+        // Prepare metadata for embed footers
+        const speakerCount = recordingStatus?.participants ?? (finalTranscript && Array.isArray(finalTranscript.participants) ? finalTranscript.participants.length : (finalTranscript?.statistics?.participantCount ?? 0));
+        const durationStr = recordingStatus?.duration ? formatDuration(recordingStatus.duration) : (finalTranscript?.duration ? formatDuration(finalTranscript.duration) : 'Unknown');
+        const startDate = recordingStatus?.startTime ? new Date(recordingStatus.startTime) : new Date();
+        const dateStr = startDate.toLocaleDateString('en-US');
 
-        // Send remaining chunks as continuation posts, marking them as continued so hierarchy is clear
+        // Send first chunk as an embed (styled post)
+        const totalPages = chunks.length;
+        const firstEmbed = new EmbedBuilder()
+          .setColor(embedColors.summary || embedColors.success)
+          .setTitle('📝 Meeting Summary')
+          .setDescription(chunks[0])
+          .setFooter({ text: `${speakerCount} speakers • ${durationStr} • ${dateStr} • Page 1 of ${totalPages}` })
+          .setTimestamp();
+
+        let first = await channel.send({ embeds: [firstEmbed] });
+
+        // Send remaining chunks as continuation embeds with footer page info
         for (let i = 1; i < chunks.length; i++) {
-          const contHeader = `**(continued — part ${i + 1} of ${chunks.length})**\n\n`;
-          await channel.send({ content: contHeader + chunks[i] });
+          const contEmbed = new EmbedBuilder()
+            .setColor(embedColors.summary || embedColors.success)
+            .setTitle('📝 Meeting Summary (continued)')
+            .setDescription(chunks[i])
+            .setFooter({ text: `${speakerCount} speakers • ${durationStr} • ${dateStr} • Page ${i + 1} of ${totalPages}` })
+            .setTimestamp();
+          await channel.send({ embeds: [contEmbed] });
         }
 
         return first;
@@ -193,8 +211,8 @@ Participants: ${recordingStatus.participants}`, inline: true },
         // Build the markdown strictly following the configured prompt in config.gemini.summaryPrompt
         summaryMarkdown += `# 📝 Meeting Summary\n\n`;
 
-        // 1. Brief Overview (2-4 sentences)
-        summaryMarkdown += `## 1. Brief Overview\n`;
+  // 1. Brief Overview (2-4 sentences) - use non-numeric heading to avoid numbered output
+  summaryMarkdown += `## Brief Overview\n`;
         if (ms.briefOverview && typeof ms.briefOverview === 'string' && ms.briefOverview.trim().length > 0) {
           summaryMarkdown += `${ms.briefOverview.trim()}\n\n`;
         } else if (ms.rawSummary && typeof ms.rawSummary === 'string' && ms.rawSummary.trim().length > 0) {
@@ -204,8 +222,8 @@ Participants: ${recordingStatus.participants}`, inline: true },
           summaryMarkdown += `No brief overview available.\n\n`;
         }
 
-        // 2. Chronological Sections
-        summaryMarkdown += `## 2. Chronological Sections\n`;
+  // Chronological Sections - non-numeric heading
+  summaryMarkdown += `## Chronological Sections\n`;
         if (ms.chronologicalSections && Array.isArray(ms.chronologicalSections) && ms.chronologicalSections.length > 0) {
           ms.chronologicalSections.forEach((section) => {
             const heading = section.title || section.heading || section.timestamp || section.speaker || 'Untitled Section';
@@ -227,8 +245,8 @@ Participants: ${recordingStatus.participants}`, inline: true },
           summaryMarkdown += `No chronological sections detected.\n\n`;
         }
 
-        // 3. Action Items
-        summaryMarkdown += `## 3. Action Items\n`;
+  // Action Items - non-numeric heading
+  summaryMarkdown += `## Action Items\n`;
         if (ms.actionItems && Array.isArray(ms.actionItems) && ms.actionItems.length > 0) {
           ms.actionItems.forEach((ai) => {
             // Support structured action items or simple strings
@@ -250,8 +268,17 @@ Participants: ${recordingStatus.participants}`, inline: true },
         summaryMarkdown += `---\n\n**Appendix — Raw Transcript**\n\nThe raw transcript will be attached as a separate .txt file.\n`;
       }
 
-  // Send the structured summary: attempt a single post, otherwise send first post then continuation posts
-  await sendAsPostThenContinue(summaryChannel, summaryMarkdown);
+  // Send the structured summary as a post. If the channel is an Announcement (news) channel,
+  // attempt to crosspost the first message so it behaves as a "post" rather than a plain message.
+  const firstSummaryMessage = await sendAsPostThenContinue(summaryChannel, summaryMarkdown);
+  try {
+    if (firstSummaryMessage && typeof firstSummaryMessage.crosspost === 'function') {
+      await firstSummaryMessage.crosspost();
+      console.log(`✅ [STOP] Crossposted summary message in ${targetChannelId}`);
+    }
+  } catch (crossErr) {
+    console.warn('⚠️ [STOP] Could not crosspost summary (channel may not be an Announcement channel or bot lacks permission):', crossErr.message);
+  }
 
       // Attach raw transcript as a .txt file (safe for large text)
       try {
