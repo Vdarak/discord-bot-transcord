@@ -79,9 +79,9 @@ export const config = {
   // Gemini Settings
   gemini: {
     // Default model; can be overridden with GEMINI_MODEL env var if desired
-    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-exp',
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
     // Alternative higher-capacity model to try for very large inputs/outputs
-    largeModel: process.env.GEMINI_LARGE_MODEL || 'gemini-pro-1.7',
+    largeModel: process.env.GEMINI_LARGE_MODEL || 'gemini-2.5-pro',
     maxTokens: parseInt(process.env.GEMINI_MAX_TOKENS) || 8192,
     temperature: parseFloat(process.env.GEMINI_TEMPERATURE) || 0.3,
     // If transcript length (characters) exceeds this threshold, summarizer may try `largeModel`
