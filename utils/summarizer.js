@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { config } from '../config.js';
 
-/**
+/** 
  * Google Gemini AI Summary Generation Service
  * Handles meeting transcript analysis and summary generation
  */
