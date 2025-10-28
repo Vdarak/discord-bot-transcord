@@ -98,15 +98,36 @@ Additional Meeting Context:
     // Generate summary
     const result = await modelToUse.generateContent(prompt);
     const summaryText = result.response.text();
-    
+
     if (!summaryText || summaryText.trim().length === 0) {
       throw new Error('Gemini returned empty summary');
     }
-    
+
     console.log(`✅ Summary generated: ${summaryText.length} characters`);
-    
-    // Parse the structured summary
-    const structuredSummary = parseStructuredSummary(summaryText);
+
+    // Try to parse the model output as strict JSON first (preferred).
+    let structuredSummary = null;
+    try {
+      const parsed = JSON.parse(summaryText);
+      // Basic validation: ensure it's an object and contains at least a briefOverview or chronologicalSections
+      if (parsed && typeof parsed === 'object') {
+        structuredSummary = parsed;
+        console.log('✅ Parsed summary as JSON object');
+      }
+    } catch (jsonErr) {
+      // Not JSON - we'll fall back to the older text parsing logic
+      console.warn('⚠️ Gemini output was not valid JSON; falling back to text parsing');
+    }
+
+    // If JSON parsing didn't produce a usable structure, fall back to the existing text parser
+    if (!structuredSummary) {
+      try {
+        structuredSummary = parseStructuredSummary(summaryText);
+      } catch (parseErr) {
+        console.warn('⚠️ Failed to parse structured summary from text, using fallback extraction');
+        structuredSummary = extractFallbackSections(summaryText);
+      }
+    }
     
     // Create complete summary object
     const meetingSummary = {

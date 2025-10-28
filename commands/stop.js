@@ -197,118 +197,71 @@ Participants: ${recordingStatus.participants}`, inline: true },
         return first;
       }
 
-      // Build structured markdown summary from meetingSummary (defensive: handle undefined)
-      const ms = (typeof meetingSummary !== 'undefined') ? meetingSummary : null;
-      let summaryMarkdown = '';
-      if (!ms) {
-        summaryMarkdown = '**No summary available.**';
-      } else if (typeof ms === 'string') {
-        // Assume the summarizer already followed the configured prompt when returning a string
-        summaryMarkdown = ms;
-      } else {
-  // Build the markdown strictly following the configured prompt in config.gemini.summaryPrompt
+      // Build summary content from the structured JSON returned by the summarizer
+      let contentToPost = '';
+      const rawSummary = typeof meetingSummary !== 'undefined' ? meetingSummary : null;
 
-  // 1. Brief Overview (2-4 sentences) - use bold inline heading so body renders as normal text
-  summaryMarkdown += `**Brief Overview**\n\n`;
-        if (ms.briefOverview && typeof ms.briefOverview === 'string' && ms.briefOverview.trim().length > 0) {
-          summaryMarkdown += `${ms.briefOverview.trim()}\n\n`;
-        } else if (ms.rawSummary && typeof ms.rawSummary === 'string' && ms.rawSummary.trim().length > 0) {
-          // fallback to a rawSummary if available
-          summaryMarkdown += `${ms.rawSummary.trim()}\n\n`;
-        } else {
-          summaryMarkdown += `No brief overview available.\n\n`;
+      // Try to obtain a structured object. If the model returned a JSON string, parse it.
+      let summaryObj = null;
+      if (!rawSummary) {
+        contentToPost = 'No summary available.';
+      } else if (typeof rawSummary === 'object') {
+        summaryObj = rawSummary;
+      } else if (typeof rawSummary === 'string') {
+        try {
+          summaryObj = JSON.parse(rawSummary);
+        } catch (e) {
+          // If parsing fails, fall back to using the raw string as a short summary
+          contentToPost = rawSummary.trim().slice(0, 3800) || 'No summary available.';
+        }
+      }
+
+      // If we have a structured object, render only the fields present in the JSON schema.
+      if (summaryObj) {
+        const parts = [];
+
+        if (summaryObj.briefOverview && typeof summaryObj.briefOverview === 'string' && summaryObj.briefOverview.trim()) {
+          parts.push(summaryObj.briefOverview.trim());
         }
 
-  // Chronological Sections - use bold inline heading
-  summaryMarkdown += `**Chronological Sections**\n\n`;
-        if (ms.chronologicalSections && Array.isArray(ms.chronologicalSections) && ms.chronologicalSections.length > 0) {
-          ms.chronologicalSections.forEach((section) => {
-            const heading = section.title || section.heading || section.timestamp || section.speaker || 'Untitled Section';
-            // Render section headings as bold inline text (not Markdown H3) so embed body stays normal size
-            summaryMarkdown += `**${heading}**\n`;
-            if (Array.isArray(section.points) && section.points.length > 0) {
-              section.points.forEach(p => {
-                if (p && String(p).trim().length > 0) summaryMarkdown += `- ${String(p).trim()}\n`;
-              });
-            } else if (section.content && String(section.content).trim().length > 0) {
-              // break content into bullet points by sentences to keep concise
-              const bullets = String(section.content).trim().split(/\n|\.\s+/).map(s => s.trim()).filter(Boolean);
-              bullets.slice(0, 6).forEach(b => summaryMarkdown += `- ${b}${b.endsWith('.') ? '' : ''}\n`);
-            } else {
-              summaryMarkdown += `- No details available for this section.\n`;
+        if (Array.isArray(summaryObj.chronologicalSections) && summaryObj.chronologicalSections.length > 0) {
+          // Add a single section header (inline bold) before chronological bullets
+          parts.push('Chronological Sections:');
+          for (const sec of summaryObj.chronologicalSections) {
+            const heading = sec.heading || sec.title || sec.timestamp || sec.speaker || null;
+            if (heading) parts.push(`**${heading}**`);
+            if (Array.isArray(sec.points) && sec.points.length > 0) {
+              for (const p of sec.points) {
+                if (p && String(p).trim()) parts.push(`• ${String(p).trim()}`);
+              }
+            } else if (sec.content && String(sec.content).trim()) {
+              parts.push(`• ${String(sec.content).trim()}`);
             }
-            summaryMarkdown += `\n`;
-          });
-        } else {
-          summaryMarkdown += `No chronological sections detected.\n\n`;
+            // blank line between sections
+            parts.push('');
+          }
         }
 
-  // Action Items - non-numeric heading rendered in bold
-  summaryMarkdown += `**Action Items**\n\n`;
-        if (ms.actionItems && Array.isArray(ms.actionItems) && ms.actionItems.length > 0) {
-          ms.actionItems.forEach((ai) => {
-            // Support structured action items or simple strings
+        if (Array.isArray(summaryObj.actionItems) && summaryObj.actionItems.length > 0) {
+          parts.push('Action Items:');
+          for (const ai of summaryObj.actionItems) {
             if (typeof ai === 'string') {
-              summaryMarkdown += `- ${ai}\n`;
+              if (ai.trim()) parts.push(`• ${ai.trim()}`);
             } else if (ai && typeof ai === 'object') {
-              const actionText = ai.action || ai.title || ai.task || 'Unnamed action';
+              const action = ai.action || ai.title || ai.task || '';
               const assignee = ai.assignee || ai.owner || ai.person || 'Unassigned';
-              const due = ai.due || ai.dueDate || ai.due_at || 'No due date';
-              summaryMarkdown += `- ${actionText} — Assignee: ${assignee} — Due: ${due}\n`;
+              const due = ai.due || ai.dueDate || ai.due_at || null;
+              const dueStr = due ? ` — Due: ${due}` : '';
+              if (action) parts.push(`• ${action}${dueStr} — Assignee: ${assignee}`);
             }
-          });
-          summaryMarkdown += `\n`;
-        } else {
-          summaryMarkdown += `No action items were detected.\n\n`;
+          }
         }
 
-  // Do not include an appendix section in the generated markdown; transcript will be attached separately
+        contentToPost = parts.join('\n');
+        if (!contentToPost || contentToPost.trim().length === 0) contentToPost = 'No summary available.';
       }
 
-  // Send the structured summary as a post. If the channel is an Announcement (news) channel,
-  // attempt to crosspost the first message so it behaves as a "post" rather than a plain message.
-  // Sanitize summary to remove any top-level duplicated titles inserted by the summarizer
-  if (typeof summaryMarkdown === 'string') {
-    // Remove leading '📝 Meeting Summary' or 'Meeting Summary' headings
-    summaryMarkdown = summaryMarkdown.replace(/^\s*(?:#\s*)?(?:📝\s*)?Meeting Summary\s*\n+/i, '');
-    // Also remove an accidental leading repeated heading line like '📝 Meeting Summary' without newline
-    summaryMarkdown = summaryMarkdown.replace(/^\s*📝\s*Meeting Summary\s*/i, '');
-  }
-  // Further sanitize to remove unwanted empty-section placeholders and duplicate headings
-  if (typeof summaryMarkdown === 'string') {
-    // Remove Appendix blocks and any lines mentioning raw transcript attachment
-    summaryMarkdown = summaryMarkdown.replace(/\n?\s*Appendix(?::|\s+—).*?(?:\n|$)/gis, '\n');
-    summaryMarkdown = summaryMarkdown.replace(/The raw transcript (?:exceeds Discord's message limits and will be provided as a \.txt file attachment\.|will be attached as a separate \.txt file\.)/gi, '');
-
-  // Remove explicit 'No chronological sections detected.' blocks including their heading (support bold or ## forms)
-  summaryMarkdown = summaryMarkdown.replace(/(?:##\s*Chronological Sections|\*\*Chronological Sections\*\*)\s*\n\s*No chronological sections detected\.\s*(?:\n)*/gi, '');
-
-  // Remove explicit 'No action items were detected.' blocks including their heading (support bold or ## forms)
-  summaryMarkdown = summaryMarkdown.replace(/(?:##\s*Action Items|\*\*Action Items\*\*)\s*\n\s*No action items were detected\.\s*(?:\n)*/gi, '');
-
-    // Remove isolated horizontal rules
-    summaryMarkdown = summaryMarkdown.replace(/^---\s*$/gim, '');
-
-    // Collapse repeated '## Brief Overview' occurrences to the first one (remove duplicates)
-    // Collapse duplicate Brief Overview headers whether in '## Brief Overview' or '**Brief Overview**' form
-    const briefVariants = ['## Brief Overview', '**Brief Overview**'];
-    for (const variant of briefVariants) {
-      const idx = summaryMarkdown.indexOf(variant);
-      if (idx !== -1) {
-        const before = summaryMarkdown.slice(0, idx + variant.length);
-        let after = summaryMarkdown.slice(idx + variant.length);
-        // Remove any further occurrences of either variant
-        after = after.replace(new RegExp('(?:\n\s*)*(?:##\\s*Brief Overview|\\*\\*Brief Overview\\*\\*)', 'gi'), '');
-        summaryMarkdown = before + after;
-        break;
-      }
-    }
-
-    // Trim repeated blank lines
-    summaryMarkdown = summaryMarkdown.replace(/\n{3,}/g, '\n\n').trim();
-  }
-
-  const firstSummaryMessage = await sendAsPostThenContinue(summaryChannel, summaryMarkdown);
+      const firstSummaryMessage = await sendAsPostThenContinue(summaryChannel, contentToPost);
   try {
     if (firstSummaryMessage && typeof firstSummaryMessage.crosspost === 'function') {
       await firstSummaryMessage.crosspost();
