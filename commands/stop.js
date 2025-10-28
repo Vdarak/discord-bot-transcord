@@ -399,6 +399,37 @@ async function updateProcessingProgress(interaction, currentStep, statusText) {
 }
 
 /**
+ * Creates an error embed
+ * @param {string} title - Error title
+ * @param {string} description - Error description
+ * @returns {EmbedBuilder} Error embed
+ */
+function createErrorEmbed(title, description) {
+  return new EmbedBuilder()
+    .setColor(embedColors.error)
+    .setTitle(title)
+    .setDescription(description)
+    .setTimestamp();
+}
+
+/**
+ * Checks if user has permission to use the command
+ * @param {Object} interaction - Discord interaction
+ * @returns {boolean} True if user has permission
+ */
+function hasPermission(interaction) {
+  // Check for Manage Channels permission
+  if (interaction.member?.permissions?.has?.(PermissionFlagsBits.ManageChannels)) {
+    return true;
+  }
+  // Check for specific role if configured
+  if (config.discord.allowedRoleId) {
+    return interaction.member?.roles?.cache?.has(config.discord.allowedRoleId);
+  }
+  return false;
+}
+
+/**
  * Creates a summary embed for the completed transcription
  * @param {Object} summary - Generated summary
  * @param {Object} transcript - Final transcript
