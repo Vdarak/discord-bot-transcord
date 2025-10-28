@@ -48,6 +48,10 @@ export async function execute(interaction) {
         embeds: [createErrorEmbed('⚠️ Not Recording', 'Bot is not currently recording. Use `/join` to start a recording first.')]
       });
     }
+    // Track processing errors and results
+    let processingError = null;
+    let finalTranscript = null;
+    let meetingSummary = null;
     
     // Send initial processing message
     const processingEmbed = new EmbedBuilder()
@@ -65,6 +69,38 @@ Participants: ${recordingStatus.participants}`, inline: true },
     await interaction.editReply({ embeds: [processingEmbed] });
     
     try {
+      // Step 2: Stop streaming transcription and generate summary
+      console.log('🔄 [STOP] Step 2: Stopping transcription and generating summary...');
+
+      try {
+        await updateProcessingProgress(interaction, 'Stopping transcription', '• Stopping streaming transcription...');
+      } catch (e) {
+        // non-fatal if progress update fails
+        console.warn('⚠️ [STOP] Could not update progress before stopping transcription:', e.message);
+      }
+
+      try {
+        // Stop the streaming session and gather the final transcript
+        finalTranscript = await stopStreamingSession(recordingStatus.sessionId);
+        console.log('✅ [STOP] Streaming transcription stopped, transcript collected');
+      } catch (stopErr) {
+        console.error('❌ [STOP] Error stopping streaming session:', stopErr);
+        processingError = stopErr && stopErr.message ? stopErr.message : String(stopErr);
+      }
+
+      try {
+        if (finalTranscript) {
+          await updateProcessingProgress(interaction, 'Generating summary', '• Generating AI summary...');
+          meetingSummary = await generateMeetingSummary(finalTranscript, { duration: recordingStatus.duration, startTime: recordingStatus.startTime, endTime: Date.now() });
+          console.log('✅ [STOP] Meeting summary generated');
+        } else {
+          console.warn('⚠️ [STOP] No final transcript available; skipping AI summary generation');
+        }
+      } catch (genErr) {
+        console.error('❌ [STOP] Error generating meeting summary:', genErr);
+        processingError = processingError || (genErr && genErr.message ? genErr.message : String(genErr));
+      }
+
       // Step 3: Post results to summary channel (use explicit target channel)
       console.log('🔄 [STOP] Step 3: Posting results...');
 
