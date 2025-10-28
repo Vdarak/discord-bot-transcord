@@ -208,8 +208,8 @@ Participants: ${recordingStatus.participants}`, inline: true },
       } else {
   // Build the markdown strictly following the configured prompt in config.gemini.summaryPrompt
 
-  // 1. Brief Overview (2-4 sentences) - use non-numeric heading to avoid numbered output
-  summaryMarkdown += `## Brief Overview\n`;
+  // 1. Brief Overview (2-4 sentences) - use bold inline heading so body renders as normal text
+  summaryMarkdown += `**Brief Overview**\n\n`;
         if (ms.briefOverview && typeof ms.briefOverview === 'string' && ms.briefOverview.trim().length > 0) {
           summaryMarkdown += `${ms.briefOverview.trim()}\n\n`;
         } else if (ms.rawSummary && typeof ms.rawSummary === 'string' && ms.rawSummary.trim().length > 0) {
@@ -219,12 +219,13 @@ Participants: ${recordingStatus.participants}`, inline: true },
           summaryMarkdown += `No brief overview available.\n\n`;
         }
 
-  // Chronological Sections - non-numeric heading
-  summaryMarkdown += `## Chronological Sections\n`;
+  // Chronological Sections - use bold inline heading
+  summaryMarkdown += `**Chronological Sections**\n\n`;
         if (ms.chronologicalSections && Array.isArray(ms.chronologicalSections) && ms.chronologicalSections.length > 0) {
           ms.chronologicalSections.forEach((section) => {
             const heading = section.title || section.heading || section.timestamp || section.speaker || 'Untitled Section';
-            summaryMarkdown += `### ${heading}\n`;
+            // Render section headings as bold inline text (not Markdown H3) so embed body stays normal size
+            summaryMarkdown += `**${heading}**\n`;
             if (Array.isArray(section.points) && section.points.length > 0) {
               section.points.forEach(p => {
                 if (p && String(p).trim().length > 0) summaryMarkdown += `- ${String(p).trim()}\n`;
@@ -242,8 +243,8 @@ Participants: ${recordingStatus.participants}`, inline: true },
           summaryMarkdown += `No chronological sections detected.\n\n`;
         }
 
-  // Action Items - non-numeric heading
-  summaryMarkdown += `## Action Items\n`;
+  // Action Items - non-numeric heading rendered in bold
+  summaryMarkdown += `**Action Items**\n\n`;
         if (ms.actionItems && Array.isArray(ms.actionItems) && ms.actionItems.length > 0) {
           ms.actionItems.forEach((ai) => {
             // Support structured action items or simple strings
@@ -279,24 +280,28 @@ Participants: ${recordingStatus.participants}`, inline: true },
     summaryMarkdown = summaryMarkdown.replace(/\n?\s*Appendix(?::|\s+—).*?(?:\n|$)/gis, '\n');
     summaryMarkdown = summaryMarkdown.replace(/The raw transcript (?:exceeds Discord's message limits and will be provided as a \.txt file attachment\.|will be attached as a separate \.txt file\.)/gi, '');
 
-    // Remove explicit 'No chronological sections detected.' blocks including their heading
-    summaryMarkdown = summaryMarkdown.replace(/##\s*Chronological Sections\s*\n\s*No chronological sections detected\.\s*(?:\n)*/gi, '');
+  // Remove explicit 'No chronological sections detected.' blocks including their heading (support bold or ## forms)
+  summaryMarkdown = summaryMarkdown.replace(/(?:##\s*Chronological Sections|\*\*Chronological Sections\*\*)\s*\n\s*No chronological sections detected\.\s*(?:\n)*/gi, '');
 
-    // Remove explicit 'No action items were detected.' blocks including their heading
-    summaryMarkdown = summaryMarkdown.replace(/##\s*Action Items\s*\n\s*No action items were detected\.\s*(?:\n)*/gi, '');
+  // Remove explicit 'No action items were detected.' blocks including their heading (support bold or ## forms)
+  summaryMarkdown = summaryMarkdown.replace(/(?:##\s*Action Items|\*\*Action Items\*\*)\s*\n\s*No action items were detected\.\s*(?:\n)*/gi, '');
 
     // Remove isolated horizontal rules
     summaryMarkdown = summaryMarkdown.replace(/^---\s*$/gim, '');
 
     // Collapse repeated '## Brief Overview' occurrences to the first one (remove duplicates)
-    const briefHeader = '## Brief Overview';
-    const idx = summaryMarkdown.indexOf(briefHeader);
-    if (idx !== -1) {
-      // Keep the first, remove any subsequent occurrences
-      const before = summaryMarkdown.slice(0, idx + briefHeader.length);
-      let after = summaryMarkdown.slice(idx + briefHeader.length);
-      after = after.replace(new RegExp('(?:\n\s*)*##\\s*Brief Overview', 'gi'), '');
-      summaryMarkdown = before + after;
+    // Collapse duplicate Brief Overview headers whether in '## Brief Overview' or '**Brief Overview**' form
+    const briefVariants = ['## Brief Overview', '**Brief Overview**'];
+    for (const variant of briefVariants) {
+      const idx = summaryMarkdown.indexOf(variant);
+      if (idx !== -1) {
+        const before = summaryMarkdown.slice(0, idx + variant.length);
+        let after = summaryMarkdown.slice(idx + variant.length);
+        // Remove any further occurrences of either variant
+        after = after.replace(new RegExp('(?:\n\s*)*(?:##\\s*Brief Overview|\\*\\*Brief Overview\\*\\*)', 'gi'), '');
+        summaryMarkdown = before + after;
+        break;
+      }
     }
 
     // Trim repeated blank lines
