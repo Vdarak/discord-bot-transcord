@@ -118,40 +118,41 @@ Participants: ${recordingStatus.participants}`, inline: true },
         return last;
       }
 
-      // Build structured markdown summary from meetingSummary
+      // Build structured markdown summary from meetingSummary (defensive: handle undefined)
+      const ms = (typeof meetingSummary !== 'undefined') ? meetingSummary : null;
       let summaryMarkdown = '';
-      if (!meetingSummary) {
+      if (!ms) {
         summaryMarkdown = '**No summary available.**';
-      } else if (typeof meetingSummary === 'string') {
-        summaryMarkdown = meetingSummary;
+      } else if (typeof ms === 'string') {
+        summaryMarkdown = ms;
       } else {
         summaryMarkdown += `# 📝 Meeting Summary\n\n`;
-        if (meetingSummary.briefOverview) summaryMarkdown += `## 1. Brief Overview\n${meetingSummary.briefOverview}\n\n`;
-        if (meetingSummary.chronologicalSections && Array.isArray(meetingSummary.chronologicalSections)) {
+        if (ms.briefOverview) summaryMarkdown += `## 1. Brief Overview\n${ms.briefOverview}\n\n`;
+        if (ms.chronologicalSections && Array.isArray(ms.chronologicalSections)) {
           summaryMarkdown += `## 2. Chronological Sections\n`;
-          meetingSummary.chronologicalSections.forEach(section => {
+          ms.chronologicalSections.forEach(section => {
             summaryMarkdown += `### ${section.title || section.heading || ''}\n`;
             if (Array.isArray(section.points)) section.points.forEach(p => summaryMarkdown += `- ${p}\n`);
             else if (section.content) summaryMarkdown += `${section.content}\n`;
             summaryMarkdown += '\n';
           });
         }
-        if (meetingSummary.keyDiscussionPoints && meetingSummary.keyDiscussionPoints.length) {
+        if (ms.keyDiscussionPoints && ms.keyDiscussionPoints.length) {
           summaryMarkdown += `## 3. Key Discussion Points\n`;
-          meetingSummary.keyDiscussionPoints.forEach(pt => { summaryMarkdown += `- ${pt}\n`; });
+          ms.keyDiscussionPoints.forEach(pt => { summaryMarkdown += `- ${pt}\n`; });
           summaryMarkdown += '\n';
         }
-        if (meetingSummary.actionItems && meetingSummary.actionItems.length) {
+        if (ms.actionItems && ms.actionItems.length) {
           summaryMarkdown += `## 4. Action Items\n`;
-          meetingSummary.actionItems.forEach(ai => { summaryMarkdown += `- ${ai}\n`; });
+          ms.actionItems.forEach(ai => { summaryMarkdown += `- ${ai}\n`; });
           summaryMarkdown += '\n';
         }
-        if (meetingSummary.decisionsMade && meetingSummary.decisionsMade.length) {
+        if (ms.decisionsMade && ms.decisionsMade.length) {
           summaryMarkdown += `## 5. Decisions Made\n`;
-          meetingSummary.decisionsMade.forEach(d => { summaryMarkdown += `- ${d}\n`; });
+          ms.decisionsMade.forEach(d => { summaryMarkdown += `- ${d}\n`; });
           summaryMarkdown += '\n';
         }
-        if (meetingSummary.nextSteps) summaryMarkdown += `## 6. Next Steps\n${meetingSummary.nextSteps}\n\n`;
+        if (ms.nextSteps) summaryMarkdown += `## 6. Next Steps\n${ms.nextSteps}\n\n`;
         summaryMarkdown += '**Raw transcript will be attached as a .txt file.**';
       }
 
