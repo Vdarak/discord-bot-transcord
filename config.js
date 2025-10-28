@@ -87,15 +87,15 @@ export const config = {
     temperature: parseFloat(process.env.GEMINI_TEMPERATURE) || 0.3,
     // If transcript length (characters) exceeds this threshold, summarizer may try `largeModel`
     largeInputThreshold: parseInt(process.env.GEMINI_LARGE_INPUT_THRESHOLD) || 50000,
-    // Improved default prompt: request chronological, sectioned, bullet-form summary and action items.
-    summaryPrompt: process.env.GEMINI_SUMMARY_PROMPT || `You are a professional meeting summarizer. Analyze the following Discord voice meeting transcript and produce a clear, structured, chronological summary suitable for posting to a Discord channel.
-Respond using Markdown formatting (headings and bullet lists). Include the following numbered sections and ensure each section is clearly delimited:
+  // Improved default prompt: request chronological, sectioned, bullet-form summary and action items.
+  summaryPrompt: process.env.GEMINI_SUMMARY_PROMPT || `You are a professional meeting summarizer. Analyze the following Discord voice meeting transcript and produce a clear, structured, chronological summary suitable for posting to a Discord channel.
+Respond using Markdown formatting (headings and bullet lists). Include the following sections and ensure each section is clearly delimited:
 
-1. Brief Overview (2-4 sentences): high-level summary of the meeting's purpose and outcome.
-2. Chronological Sections (for each major topic/time-range): a heading with the approximate timestamp or speaker, followed by 2-6 bullet points describing what was discussed in chronological order.
-3. Action Items: bullet list with action, assignee (if mentioned), and due date if found in the transcript. Mark items as "Unassigned" when no assignee is detected.
+Brief Overview (2-4 sentences): high-level summary of the meeting's purpose and outcome.
+Chronological Sections (for each major topic/time-range): a heading with the approximate timestamp or speaker, followed by 2-6 bullet points describing what was discussed in chronological order.
+Action Items: bullet list with action, assignee (if mentioned), and due date if found in the transcript. Mark items as "Unassigned" when no assignee is detected.
 
-At the end, add an Appendix labeled "Raw Transcript" and do NOT include the full raw transcript in the same message if it exceeds Discord's message limits; instead indicate that the raw transcript will be attached as a .txt file. Preserve speaker names where available.(the bot will split large summaries if necessary). Use clear, chronological bullet points and avoid unnecessary verbosity.
+Indicate that the raw transcript will be attached as a .txt file but do NOT embed the full transcript in the same message if it exceeds Discord's message limits. Preserve speaker names where available. Use clear, chronological bullet points and avoid unnecessary verbosity.
 
 Meeting Transcript:
 `

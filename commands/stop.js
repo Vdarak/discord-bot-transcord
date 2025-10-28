@@ -178,7 +178,6 @@ Participants: ${recordingStatus.participants}`, inline: true },
         const totalPages = chunks.length;
         const firstEmbed = new EmbedBuilder()
           .setColor(embedColors.summary || embedColors.success)
-          .setTitle('📝 Meeting Summary')
           .setDescription(chunks[0])
           .setFooter({ text: `${speakerCount} speakers • ${durationStr} • ${dateStr} • Page 1 of ${totalPages}` })
           .setTimestamp();
@@ -189,7 +188,6 @@ Participants: ${recordingStatus.participants}`, inline: true },
         for (let i = 1; i < chunks.length; i++) {
           const contEmbed = new EmbedBuilder()
             .setColor(embedColors.summary || embedColors.success)
-            .setTitle('📝 Meeting Summary (continued)')
             .setDescription(chunks[i])
             .setFooter({ text: `${speakerCount} speakers • ${durationStr} • ${dateStr} • Page ${i + 1} of ${totalPages}` })
             .setTimestamp();
@@ -208,8 +206,7 @@ Participants: ${recordingStatus.participants}`, inline: true },
         // Assume the summarizer already followed the configured prompt when returning a string
         summaryMarkdown = ms;
       } else {
-        // Build the markdown strictly following the configured prompt in config.gemini.summaryPrompt
-        summaryMarkdown += `# 📝 Meeting Summary\n\n`;
+  // Build the markdown strictly following the configured prompt in config.gemini.summaryPrompt
 
   // 1. Brief Overview (2-4 sentences) - use non-numeric heading to avoid numbered output
   summaryMarkdown += `## Brief Overview\n`;
@@ -264,12 +261,48 @@ Participants: ${recordingStatus.participants}`, inline: true },
           summaryMarkdown += `No action items were detected.\n\n`;
         }
 
-        // Appendix: Raw Transcript notice (do not embed full transcript here if large)
-        summaryMarkdown += `---\n\n**Appendix — Raw Transcript**\n\nThe raw transcript will be attached as a separate .txt file.\n`;
+  // Do not include an appendix section in the generated markdown; transcript will be attached separately
       }
 
   // Send the structured summary as a post. If the channel is an Announcement (news) channel,
   // attempt to crosspost the first message so it behaves as a "post" rather than a plain message.
+  // Sanitize summary to remove any top-level duplicated titles inserted by the summarizer
+  if (typeof summaryMarkdown === 'string') {
+    // Remove leading '📝 Meeting Summary' or 'Meeting Summary' headings
+    summaryMarkdown = summaryMarkdown.replace(/^\s*(?:#\s*)?(?:📝\s*)?Meeting Summary\s*\n+/i, '');
+    // Also remove an accidental leading repeated heading line like '📝 Meeting Summary' without newline
+    summaryMarkdown = summaryMarkdown.replace(/^\s*📝\s*Meeting Summary\s*/i, '');
+  }
+  // Further sanitize to remove unwanted empty-section placeholders and duplicate headings
+  if (typeof summaryMarkdown === 'string') {
+    // Remove Appendix blocks and any lines mentioning raw transcript attachment
+    summaryMarkdown = summaryMarkdown.replace(/\n?\s*Appendix(?::|\s+—).*?(?:\n|$)/gis, '\n');
+    summaryMarkdown = summaryMarkdown.replace(/The raw transcript (?:exceeds Discord's message limits and will be provided as a \.txt file attachment\.|will be attached as a separate \.txt file\.)/gi, '');
+
+    // Remove explicit 'No chronological sections detected.' blocks including their heading
+    summaryMarkdown = summaryMarkdown.replace(/##\s*Chronological Sections\s*\n\s*No chronological sections detected\.\s*(?:\n)*/gi, '');
+
+    // Remove explicit 'No action items were detected.' blocks including their heading
+    summaryMarkdown = summaryMarkdown.replace(/##\s*Action Items\s*\n\s*No action items were detected\.\s*(?:\n)*/gi, '');
+
+    // Remove isolated horizontal rules
+    summaryMarkdown = summaryMarkdown.replace(/^---\s*$/gim, '');
+
+    // Collapse repeated '## Brief Overview' occurrences to the first one (remove duplicates)
+    const briefHeader = '## Brief Overview';
+    const idx = summaryMarkdown.indexOf(briefHeader);
+    if (idx !== -1) {
+      // Keep the first, remove any subsequent occurrences
+      const before = summaryMarkdown.slice(0, idx + briefHeader.length);
+      let after = summaryMarkdown.slice(idx + briefHeader.length);
+      after = after.replace(new RegExp('(?:\n\s*)*##\\s*Brief Overview', 'gi'), '');
+      summaryMarkdown = before + after;
+    }
+
+    // Trim repeated blank lines
+    summaryMarkdown = summaryMarkdown.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
   const firstSummaryMessage = await sendAsPostThenContinue(summaryChannel, summaryMarkdown);
   try {
     if (firstSummaryMessage && typeof firstSummaryMessage.crosspost === 'function') {
