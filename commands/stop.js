@@ -211,8 +211,16 @@ Participants: ${recordingStatus.participants}`, inline: true },
         try {
           summaryObj = JSON.parse(rawSummary);
         } catch (e) {
-          // If parsing fails, fall back to using the raw string as a short summary
-          contentToPost = rawSummary.trim().slice(0, 3800) || 'No summary available.';
+          // If parsing fails, do NOT post raw JSON. Attempt to extract the three required
+          // sections (briefOverview, chronologicalSections, actionItems) from the raw string
+          // and format a safe summary. If extraction fails, show a short safe fallback.
+          try {
+            contentToPost = formatSummaryFromRawString(rawSummary);
+          } catch (formatErr) {
+            console.warn('⚠️ [STOP] Could not format raw summary string, using safe fallback');
+            const safeExcerpt = rawSummary.replace(/```/g, '').trim().slice(0, 1000);
+            contentToPost = '**Summary unavailable (unparseable AI output)**\n' + (safeExcerpt ? (`\n\nExcerpt:\n` + safeExcerpt + (safeExcerpt.length >= 1000 ? '\n\n*[Excerpt truncated]*' : '')) : '\nNo readable excerpt available.');
+          }
         }
       }
 
@@ -590,17 +598,15 @@ function formatSummaryObject(summary) {
   try {
     const parts = [];
 
-    if (summary.title && typeof summary.title === 'string') {
-      parts.push(`**${summary.title.trim()}**`);
-    }
-
+    // Always include the three required sections: briefOverview, chronologicalSections, actionItems
     if (summary.briefOverview && typeof summary.briefOverview === 'string' && summary.briefOverview.trim()) {
-      parts.push(summary.briefOverview.trim());
+      parts.push(`**Brief Overview**\n${summary.briefOverview.trim()}`);
+    } else {
+      parts.push('**Brief Overview**\nNo brief overview provided.');
     }
 
-    // Chronological / chronologicalSections (ordered)
+    parts.push('\n**Chronological Sections**');
     if (Array.isArray(summary.chronologicalSections) && summary.chronologicalSections.length > 0) {
-      parts.push('\n**Chronological Sections:**');
       for (const sec of summary.chronologicalSections) {
         const heading = sec.heading || sec.title || sec.timestamp || sec.speaker || null;
         if (heading) parts.push(`\n**${heading}**`);
@@ -612,11 +618,12 @@ function formatSummaryObject(summary) {
           parts.push(`• ${String(sec.content).trim()}`);
         }
       }
+    } else {
+      parts.push('• No chronological sections identified.');
     }
 
-    // Action items
+    parts.push('\n**Action Items**');
     if (Array.isArray(summary.actionItems) && summary.actionItems.length > 0) {
-      parts.push('\n**Action Items:**');
       for (const ai of summary.actionItems) {
         if (typeof ai === 'string') {
           if (ai.trim()) parts.push(`• ${ai.trim()}`);
@@ -628,28 +635,97 @@ function formatSummaryObject(summary) {
           if (action) parts.push(`• ${action}${dueStr} — Assignee: ${assignee}`);
         }
       }
-    }
-
-    // Decisions
-    if (Array.isArray(summary.decisionsMade) && summary.decisionsMade.length > 0) {
-      parts.push('\n**Decisions Made:**');
-      for (const d of summary.decisionsMade) {
-        if (typeof d === 'string' && d.trim()) parts.push(`• ${d.trim()}`);
-        else if (d && typeof d === 'object' && (d.title || d.decision)) parts.push(`• ${d.title || d.decision}`);
-      }
-    }
-
-    // Next steps
-    if (summary.nextSteps && typeof summary.nextSteps === 'string' && summary.nextSteps.trim()) {
-      parts.push('\n**Next Steps:**');
-      parts.push(summary.nextSteps.trim());
+    } else {
+      parts.push('• No action items identified.');
     }
 
     const out = parts.join('\n');
-    // Ensure we don't return an empty string
     return out && out.trim() ? out : (summary.briefOverview || 'No summary available.');
   } catch (err) {
     console.warn('⚠️ [STOP] Failed to format structured summary for embed:', err.message || err);
-    return summary.briefOverview || (typeof summary.rawSummary === 'string' ? summary.rawSummary : JSON.stringify(summary || {}, null, 2));
+    // On error, prefer returning only the briefOverview or a safe fallback string (do not return raw JSON)
+    return summary.briefOverview || 'No summary available.';
   }
+}
+
+/**
+ * Attempt to extract briefOverview, chronologicalSections and actionItems from a raw string
+ * (used only when JSON.parse fails). This uses best-effort regex parsing to avoid posting raw
+ * JSON in embeds. Returns a formatted text containing the three required sections.
+ * @param {string} raw
+ * @returns {string}
+ */
+function formatSummaryFromRawString(raw) {
+  // Try one more time to parse common issues (single quotes, trailing commas)
+  try {
+    const attempt = raw.replace(/,\s*}\s*/g, '}').replace(/,\s*\]/g, ']').replace(/'/g, '"');
+    const parsed = JSON.parse(attempt);
+    if (parsed && typeof parsed === 'object') return formatSummaryObject(parsed);
+  } catch (e) {
+    // continue to regex-based best-effort
+  }
+
+  // Best-effort extraction via regex. Capture briefOverview
+  const briefMatch = raw.match(/"?briefOverview"?\s*:\s*"([\s\S]*?)"\s*(,|\})/i);
+  const brief = briefMatch ? briefMatch[1].replace(/\\n/g, '\n').trim() : '';
+
+  // Extract chronologicalSections array block
+  const chronoMatch = raw.match(/"?chronologicalSections"?\s*:\s*(\[[\s\S]*?\])/i);
+  let chronoText = '';
+  if (chronoMatch) {
+    const block = chronoMatch[1];
+    // Find headings and points inside the block
+    const sectionRegex = /\{([\s\S]*?)\}/g;
+    let m;
+    const secs = [];
+    while ((m = sectionRegex.exec(block)) !== null) {
+      const secText = m[1];
+      const headingMatch = secText.match(/"?heading"?\s*:\s*"([^"]*)"/i) || secText.match(/"?title"?\s*:\s*"([^"]*)"/i);
+      const pointsMatch = secText.match(/"?points"?\s*:\s*\[([\s\S]*?)\]/i);
+      const heading = headingMatch ? headingMatch[1].trim() : null;
+      const points = [];
+      if (pointsMatch) {
+        const pts = pointsMatch[1];
+        const itemRegex = /"([^"]+)"/g;
+        let im;
+        while ((im = itemRegex.exec(pts)) !== null) {
+          points.push(im[1].trim());
+        }
+      }
+      if (heading || points.length) secs.push({ heading, points });
+    }
+    if (secs.length) {
+      const lines = [];
+      for (const s of secs) {
+        if (s.heading) lines.push(`**${s.heading}**`);
+        for (const p of s.points) lines.push(`• ${p}`);
+      }
+      chronoText = lines.join('\n');
+    }
+  }
+
+  // Extract actionItems array
+  const actionsMatch = raw.match(/"?actionItems"?\s*:\s*(\[[\s\S]*?\])/i);
+  let actionsText = '';
+  if (actionsMatch) {
+    const block = actionsMatch[1];
+    const itemRegex = /"([^"]+)"/g;
+    const items = [];
+    let im;
+    while ((im = itemRegex.exec(block)) !== null) {
+      items.push(im[1].trim());
+    }
+    if (items.length) actionsText = items.map(i => `• ${i}`).join('\n');
+  }
+
+  // Assemble output with guaranteed three sections
+  const outParts = [];
+  outParts.push('**Brief Overview**');
+  outParts.push(brief || 'No brief overview provided.');
+  outParts.push('\n**Chronological Sections**');
+  outParts.push(chronoText || '• No chronological sections identified.');
+  outParts.push('\n**Action Items**');
+  outParts.push(actionsText || '• No action items identified.');
+
+  return outParts.join('\n');
 }
