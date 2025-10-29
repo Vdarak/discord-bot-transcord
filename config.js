@@ -87,26 +87,41 @@ export const config = {
     temperature: parseFloat(process.env.GEMINI_TEMPERATURE) || 0.3,
     // If transcript length (characters) exceeds this threshold, summarizer may try `largeModel`
     largeInputThreshold: parseInt(process.env.GEMINI_LARGE_INPUT_THRESHOLD) || 50000,
-    // Improved default prompt: request JSON-structured output for easy downstream rendering.
-    // The model should output ONLY valid JSON (no surrounding explanatory text). The JSON schema is:
-    // {
-    //   "briefOverview": string,
-    //   "chronologicalSections": [
-    //     { "heading": string, "points": [string] }
-    //   ],
-    //   "actionItems": [ { "action": string, "assignee": string|null, "due": string|null } ],
-    //   "metadata": { "speakerCount": number|null, "durationMs": number|null, "startTime": number|null }
-    // }
-    // Provide concise content. Do NOT include any headings or Markdown outside the JSON. If a field is absent, omit it or set it to null/empty.
-    summaryPrompt: process.env.GEMINI_SUMMARY_PROMPT || `You are a professional meeting summarizer. Analyze the following Discord voice meeting transcript and return a JSON object that exactly matches the schema below. Output ONLY valid JSON with no explanatory text.
-{
-  "briefOverview": "(2-4 sentence high-level summary of meeting purpose and outcome)",
-  "chronologicalSections": [
-    { "heading": "(approx timestamp or speaker)", "points": ["point1","point2"] }
-  ],
-  "actionItems": [ { "action": "(action text)", "assignee": "(name) or null", "due": "(date) or null" } ],
-  "metadata": { "speakerCount": null, "durationMs": null, "startTime": null }
-}
+    // Updated default prompt: request Markdown-formatted meeting summary suitable for direct
+    // posting into Discord embeds. The model should return ONLY the Markdown content (no
+    // surrounding JSON, code fences, or explanatory text). Structure the output exactly
+    // using these headings so the bot can display the text verbatim in embeds:
+    //
+    // ## Meeting Summary
+    // ### Brief Overview
+    // (2-4 sentence high-level summary)
+    //
+    // ### Chronological Sections
+    // - **<heading>**
+    //   - point 1
+    //   - point 2
+    //
+    // ### Action Items
+    // - Action — Assignee: <name> — Due: <date>
+    // OR: No action items identified.
+    //
+    // Output only Markdown; do not include any JSON or extra commentary.
+    summaryPrompt: process.env.GEMINI_SUMMARY_PROMPT || `You are a professional meeting summarizer. Analyze the following Discord voice meeting transcript and return a Markdown-formatted meeting summary only — no JSON and no explanatory text.
+## Meeting Summary
+
+### Brief Overview
+(Provide a 2-4 sentence high-level summary of meeting purpose and outcome)
+
+### Chronological Sections
+- **<heading>**
+  - point 1
+  - point 2
+
+### Action Items
+- Action — Assignee: <name> — Due: <date>
+Or: No action items identified.
+
+Output only the Markdown content above. Do not include any extra commentary, surrounding code fences, or JSON. Keep language concise and use bullets for lists.
 
 Meeting Transcript:
 `

@@ -152,6 +152,9 @@ Additional Meeting Context:
     };
     
     console.log('📝 Summary structure created with metadata');
+  // NOTE: The prompt now requests Markdown output from Gemini. `rawSummary` contains
+  // the original Markdown text returned by Gemini and is safe to display directly in embeds
+  // (the command logic will handle chunking/paging). Do NOT assume `rawSummary` is JSON.
     
     return meetingSummary;
     

@@ -197,101 +197,19 @@ Participants: ${recordingStatus.participants}`, inline: true },
         return first;
       }
 
-      // Build summary content from the structured JSON returned by the summarizer
+      // Build summary content directly from Gemini output and display it AS-IS (accepting markdown)
+      // Footer and paging will be handled by sendAsPostThenContinue. This intentionally
+      // avoids attempting to re-format JSON and shows the original Gemini text output.
       let contentToPost = '';
-      const rawSummary = typeof meetingSummary !== 'undefined' ? meetingSummary : null;
-
-      // Try to obtain a structured object. If the model returned a JSON string, parse it.
-      let summaryObj = null;
-      if (!rawSummary) {
+      if (!meetingSummary) {
         contentToPost = 'No summary available.';
-      } else if (typeof rawSummary === 'object') {
-        summaryObj = rawSummary;
-      } else if (typeof rawSummary === 'string') {
-        try {
-          summaryObj = JSON.parse(rawSummary);
-        } catch (e) {
-          // If parsing fails, do NOT post raw JSON. Attempt to extract the three required
-          // sections (briefOverview, chronologicalSections, actionItems) from the raw string
-          // and format a safe summary. If extraction fails, show a short safe fallback.
-          try {
-            contentToPost = formatSummaryFromRawString(rawSummary);
-          } catch (formatErr) {
-            console.warn('⚠️ [STOP] Could not format raw summary string, using safe fallback');
-            const safeExcerpt = rawSummary.replace(/```/g, '').trim().slice(0, 1000);
-            contentToPost = '**Summary unavailable (unparseable AI output)**\n' + (safeExcerpt ? (`\n\nExcerpt:\n` + safeExcerpt + (safeExcerpt.length >= 1000 ? '\n\n*[Excerpt truncated]*' : '')) : '\nNo readable excerpt available.');
-          }
-        }
-      }
-
-      // If we have a structured object, render only the fields present in the JSON schema.
-      if (summaryObj) {
-        const parts = [];
-
-        if (summaryObj.briefOverview && typeof summaryObj.briefOverview === 'string' && summaryObj.briefOverview.trim()) {
-          parts.push(summaryObj.briefOverview.trim());
-        }
-
-        if (Array.isArray(summaryObj.chronologicalSections) && summaryObj.chronologicalSections.length > 0) {
-          // Add a single section header (inline bold) before chronological bullets
-          parts.push('Chronological Sections:');
-          for (const sec of summaryObj.chronologicalSections) {
-            const heading = sec.heading || sec.title || sec.timestamp || sec.speaker || null;
-            if (heading) parts.push(`**${heading}**`);
-            if (Array.isArray(sec.points) && sec.points.length > 0) {
-              for (const p of sec.points) {
-                if (p && String(p).trim()) parts.push(`• ${String(p).trim()}`);
-              }
-            } else if (sec.content && String(sec.content).trim()) {
-              parts.push(`• ${String(sec.content).trim()}`);
-            }
-            // blank line between sections
-            parts.push('');
-          }
-        }
-
-        if (Array.isArray(summaryObj.actionItems) && summaryObj.actionItems.length > 0) {
-          parts.push('Action Items:');
-          for (const ai of summaryObj.actionItems) {
-            if (typeof ai === 'string') {
-              if (ai.trim()) parts.push(`• ${ai.trim()}`);
-            } else if (ai && typeof ai === 'object') {
-              const action = ai.action || ai.title || ai.task || '';
-              const assignee = ai.assignee || ai.owner || ai.person || 'Unassigned';
-              const due = ai.due || ai.dueDate || ai.due_at || null;
-              const dueStr = due ? ` — Due: ${due}` : '';
-              if (action) parts.push(`• ${action}${dueStr} — Assignee: ${assignee}`);
-            }
-          }
-        }
-
-        contentToPost = parts.join('\n');
-        if (!contentToPost || contentToPost.trim().length === 0) contentToPost = 'No summary available.';
-      }
-
-      // Safety: if contentToPost looks like raw JSON (starts with '{' or '['), convert it
-      // to the formatted three-section text so we never post raw JSON to the channel.
-      function looksLikeJson(s) {
-        if (!s || typeof s !== 'string') return false;
-        const t = s.trim();
-        return t.startsWith('{') || t.startsWith('[') || /"briefOverview"|briefOverview/i.test(t);
-      }
-
-      if (looksLikeJson(contentToPost)) {
-        try {
-          // Try to parse; if it's an object already stringified, parse and format
-          const parsed = JSON.parse(contentToPost);
-          contentToPost = formatSummaryObject(parsed);
-        } catch (e) {
-          // If parsing fails, attempt best-effort extraction from the raw string
-          try {
-            contentToPost = formatSummaryFromRawString(contentToPost);
-          } catch (e2) {
-            // As a last resort, produce a safe fallback excerpt (no raw JSON)
-            const safeExcerpt = String(contentToPost).replace(/```/g, '').slice(0, 1000);
-            contentToPost = '**Summary unavailable (unparseable AI output)**\n' + (safeExcerpt ? (`\n\nExcerpt:\n` + safeExcerpt + (safeExcerpt.length >= 1000 ? '\n\n*[Excerpt truncated]*' : '')) : '\nNo readable excerpt available.');
-          }
-        }
+      } else if (typeof meetingSummary === 'string') {
+        contentToPost = meetingSummary;
+      } else if (typeof meetingSummary === 'object') {
+        // Prefer the raw text returned by Gemini (rawSummary). Fall back to briefOverview.
+        contentToPost = meetingSummary.rawSummary || meetingSummary.briefOverview || 'No summary available.';
+      } else {
+        contentToPost = String(meetingSummary);
       }
 
       const firstSummaryMessage = await sendAsPostThenContinue(summaryChannel, contentToPost);
