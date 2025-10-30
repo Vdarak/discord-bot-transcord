@@ -36,13 +36,36 @@ export async function startStreamingSession(sessionId, connection, userIds) {
     // createStreamingTranscriber resolves when the AssemblyAI WebSocket session has begun
     // so there's no separate `connect()` step to call here.
     
-    // Set up audio streams for each user
+    // Prepare session info early and add a pending set to prevent duplicate subscriptions
     const userStreams = new Map();
+    const pendingUserStreams = new Set();
+
+    const sessionInfo = {
+      sessionId,
+      connection,
+      transcriber,
+      userStreams,
+      pendingUserStreams,
+      startTime: Date.now(),
+      active: true
+    };
+
+    // Publish session info early so addUserToStreamingSession can join safely without races
+    activeStreamingSessions.set(sessionId, sessionInfo);
     
     for (const userId of userIds) {
       try {
         console.log(`🔗 [STREAM-AUDIO] Setting up stream for user: ${userId}`);
-        
+
+        // If user already has a stream or is pending, skip (defensive)
+        if (userStreams.has(userId) || pendingUserStreams.has(userId)) {
+          console.log(`ℹ️ [STREAM-AUDIO] User ${userId} already connected or pending — skipping duplicate subscription`);
+          continue;
+        }
+
+        // Mark as pending to avoid races
+        pendingUserStreams.add(userId);
+
         // Subscribe to user's audio stream
         const audioStream = connection.receiver.subscribe(userId, {
           end: { behavior: 'manual' }
@@ -66,31 +89,26 @@ export async function startStreamingSession(sessionId, connection, userIds) {
         
         // Connect audio stream to transcriber
         await connectAudioStream(sessionId, audioStream, userId);
-        
+
         userStreams.set(userId, {
           audioStream,
           dataReceived: false,
           startTime: Date.now()
         });
-        
+
+        // Clear pending marker
+        pendingUserStreams.delete(userId);
+
         console.log(`✅ [STREAM-AUDIO] User ${userId} connected to streaming transcription`);
         
       } catch (error) {
+        // Ensure pending marker is cleared on error so future attempts can proceed
+        try { pendingUserStreams.delete(userId); } catch (e) {}
         console.error(`❌ [STREAM-AUDIO] Failed to set up stream for user ${userId}:`, error);
       }
     }
     
-    // Store session information
-    const sessionInfo = {
-      sessionId,
-      connection,
-      transcriber,
-      userStreams,
-      startTime: Date.now(),
-      active: true
-    };
-    
-    activeStreamingSessions.set(sessionId, sessionInfo);
+    // sessionInfo already created and stored earlier
     
     console.log(`✅ [STREAM-AUDIO] Streaming session started: ${sessionId} with ${userStreams.size} active streams`);
     
@@ -163,29 +181,49 @@ export async function addUserToStreamingSession(sessionId, userId) {
       return false;
     }
     
-    // Check if user is already in session
+    // Ensure a pending set exists
+    if (!sessionInfo.pendingUserStreams) sessionInfo.pendingUserStreams = new Set();
+
+    // Check if user is already in session or pending
     if (sessionInfo.userStreams.has(userId)) {
       console.log(`ℹ️ [STREAM-AUDIO] User ${userId} already in session`);
       return true;
     }
+    if (sessionInfo.pendingUserStreams.has(userId)) {
+      console.log(`ℹ️ [STREAM-AUDIO] User ${userId} add already pending`);
+      return true;
+    }
     
+    // Mark pending before subscribing/connecting
+    sessionInfo.pendingUserStreams.add(userId);
+
     // Subscribe to new user's audio stream
     const audioStream = sessionInfo.connection.receiver.subscribe(userId, {
       end: { behavior: 'manual' }
     });
-    
-    // Connect to transcriber
-    await connectAudioStream(sessionId, audioStream, userId);
-    
-    // Add to session
-    sessionInfo.userStreams.set(userId, {
-      audioStream,
-      dataReceived: false,
-      startTime: Date.now()
-    });
-    
-    console.log(`✅ [STREAM-AUDIO] User ${userId} added to session ${sessionId}`);
-    return true;
+
+    try {
+      // Connect to transcriber
+      await connectAudioStream(sessionId, audioStream, userId);
+
+      // Add to session
+      sessionInfo.userStreams.set(userId, {
+        audioStream,
+        dataReceived: false,
+        startTime: Date.now()
+      });
+
+      console.log(`✅ [STREAM-AUDIO] User ${userId} added to session ${sessionId}`);
+      return true;
+    } catch (err) {
+      console.error(`❌ [STREAM-AUDIO] Failed to connect stream for ${userId}:`, err);
+      // clear pending on failure
+      try { sessionInfo.pendingUserStreams.delete(userId); } catch (e) {}
+      return false;
+    } finally {
+      // Clear pending marker regardless (if it wasn't already removed)
+      try { sessionInfo.pendingUserStreams.delete(userId); } catch (e) {}
+    }
     
   } catch (error) {
     console.error(`❌ [STREAM-AUDIO] Failed to add user ${userId} to session:`, error);
@@ -210,6 +248,10 @@ export async function removeUserFromStreamingSession(sessionId, userId) {
     
     const streamInfo = sessionInfo.userStreams.get(userId);
     if (!streamInfo) {
+      // Ensure pending markers are also cleared
+      if (sessionInfo.pendingUserStreams && sessionInfo.pendingUserStreams.has(userId)) {
+        sessionInfo.pendingUserStreams.delete(userId);
+      }
       return false;
     }
     
@@ -219,6 +261,11 @@ export async function removeUserFromStreamingSession(sessionId, userId) {
     // Remove from session
     sessionInfo.userStreams.delete(userId);
     
+    // Also clear any pending marker if present
+    if (sessionInfo.pendingUserStreams && sessionInfo.pendingUserStreams.has(userId)) {
+      sessionInfo.pendingUserStreams.delete(userId);
+    }
+
     console.log(`✅ [STREAM-AUDIO] User ${userId} removed from session`);
     return true;
     

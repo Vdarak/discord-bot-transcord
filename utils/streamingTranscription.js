@@ -6,6 +6,7 @@ import { promises as fsp } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import Prism from 'prism-media';
+import crypto from 'crypto';
 
 /**
  * AssemblyAI Streaming Transcription Service - Direct WebSocket Implementation
@@ -14,6 +15,26 @@ import Prism from 'prism-media';
 
 // Track active connections
 let activeTranscribers = new Map();
+
+// Small helper used for conditional verbose logging in this module
+function logDebug(...args) {
+  try {
+    if (config && config.streaming && config.streaming.debugVerbose) {
+      console.debug('[STREAM-DEBUG]', ...args);
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+function computeFrameHash(buffer) {
+  try {
+    // Use a fast digest for frame identity (not cryptographic necessity here)
+    return crypto.createHash('sha1').update(buffer).digest('hex');
+  } catch (e) {
+    return null;
+  }
+}
 
 /**
  * Initialize streaming client (now using direct WebSocket)
@@ -210,7 +231,7 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     // Add diagnostic logging for incoming Opus packets (raw input)
     audioStream.on('data', (opusPacket) => {
       try {
-        console.log(`🔔 [OPUS-INPUT] Received opus packet for ${userId}: ${opusPacket.length} bytes`);
+        logDebug(`🔔 [OPUS-INPUT] Received opus packet for ${userId}: ${opusPacket.length} bytes`);
       } catch (err) {
         // ignore logging errors
       }
@@ -219,7 +240,7 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     // Add diagnostic logging on opus decoder output (PCM chunks)
     opusDecoder.on('data', (pcmChunk) => {
       try {
-        console.log(`🎚️ [OPUS-DECODE] Decoded PCM for ${userId}: ${pcmChunk.length} bytes`);
+        logDebug(`🎚️ [OPUS-DECODE] Decoded PCM for ${userId}: ${pcmChunk.length} bytes`);
       } catch (err) {
         // ignore logging errors
       }
@@ -228,7 +249,7 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     // Also log mono transform output sizes for diagnosis
     audioTransform.on('data', (monoChunk) => {
       try {
-        console.log(`🔍 [TRANSFORM] Mono chunk for ${userId}: ${monoChunk.length} bytes`);
+        logDebug(`🔍 [TRANSFORM] Mono chunk for ${userId}: ${monoChunk.length} bytes`);
       } catch (err) {
         // ignore
       }
@@ -239,6 +260,15 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
 
   // Ensure voice activity map exists for VAD logging
   if (!data.voiceActivity) data.voiceActivity = new Map();
+
+  // Ensure participant metadata exists and attach a recentFrameHashes array used for dedupe
+  let participantMeta = data.participants.get(userId);
+  if (!participantMeta) {
+    participantMeta = { joinedAt: Date.now(), recentFrameHashes: [] };
+    data.participants.set(userId, participantMeta);
+  } else if (!participantMeta.recentFrameHashes) {
+    participantMeta.recentFrameHashes = [];
+  }
 
   // Create a chunking transform that accumulates PCM bytes until target duration is reached
     const chunkMs = 200; // default target chunk duration in milliseconds (between 50 and 1000)
@@ -293,16 +323,40 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
           }
 
           if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
-            websocket.send(frame, { binary: true });
-            // Also write to disk if recording enabled
+            // Packet deduplication: compute hash and compare with recent hashes for this user
+            let isDuplicate = false;
             try {
-              if (data.recording && data.recording.enabled && data.recording.writeStream) {
-                data.recording.writeStream.write(frame);
+              if (config && config.streaming && config.streaming.enablePacketDedupe) {
+                const hash = computeFrameHash(frame);
+                const now = Date.now();
+                // Prune old entries first
+                participantMeta.recentFrameHashes = (participantMeta.recentFrameHashes || []).filter(h => (now - h.ts) <= (config.streaming.dedupeWindowMs || 2000));
+                if (participantMeta.recentFrameHashes.some(h => h.hash === hash)) {
+                  isDuplicate = true;
+                } else {
+                  participantMeta.recentFrameHashes.push({ hash, ts: now });
+                  // keep size bounded
+                  while (participantMeta.recentFrameHashes.length > (config.streaming.dedupeMaxEntries || 64)) participantMeta.recentFrameHashes.shift();
+                }
               }
-            } catch (writeErr) {
-              console.warn('⚠️ [STREAMING] Failed to write audio frame to disk:', writeErr.message);
+            } catch (dedupeErr) {
+              console.warn('⚠️ [STREAMING] Packet dedupe error:', dedupeErr.message);
             }
-            console.log(`🔊 [STREAMING] Sent audio frame for ${userId}: ${bufferedBytes} bytes (~${(bufferedBytes/bytesPerMs).toFixed(1)} ms)`);
+
+            if (isDuplicate) {
+              logDebug(`⚠️ [STREAMING-DEDUPE] Dropping duplicate frame for ${userId} (${bufferedBytes} bytes)`);
+            } else {
+              websocket.send(frame, { binary: true });
+              // Also write to disk if recording enabled
+              try {
+                if (data.recording && data.recording.enabled && data.recording.writeStream) {
+                  data.recording.writeStream.write(frame);
+                }
+              } catch (writeErr) {
+                console.warn('⚠️ [STREAMING] Failed to write audio frame to disk:', writeErr.message);
+              }
+              logDebug(`🔊 [STREAMING] Sent audio frame for ${userId}: ${bufferedBytes} bytes (~${(bufferedBytes/bytesPerMs).toFixed(1)} ms)`);
+            }
           } else {
             console.warn(`⚠️ [STREAMING] Skipping audio chunk - connection closed for ${userId}`);
           }
@@ -325,16 +379,37 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
         if (bufferedBytes > 0) {
           const frame = Buffer.concat(chunkBuffer, bufferedBytes);
           if (data.isConnected && websocket.readyState === WebSocket.OPEN) {
-            websocket.send(frame, { binary: true });
-            // write final to disk if enabled
+            // Deduplicate final frame as well
+            let isDuplicate = false;
             try {
-              if (data.recording && data.recording.enabled && data.recording.writeStream) {
-                data.recording.writeStream.write(frame);
+              if (config && config.streaming && config.streaming.enablePacketDedupe) {
+                const hash = computeFrameHash(frame);
+                const now = Date.now();
+                participantMeta.recentFrameHashes = (participantMeta.recentFrameHashes || []).filter(h => (now - h.ts) <= (config.streaming.dedupeWindowMs || 2000));
+                if (participantMeta.recentFrameHashes.some(h => h.hash === hash)) {
+                  isDuplicate = true;
+                } else {
+                  participantMeta.recentFrameHashes.push({ hash, ts: now });
+                }
               }
-            } catch (writeErr) {
-              console.warn('⚠️ [STREAMING] Failed to write final audio frame to disk:', writeErr.message);
+            } catch (dedupeErr) {
+              console.warn('⚠️ [STREAMING] Packet dedupe error (final frame):', dedupeErr.message);
             }
-            console.log(`🔊 [STREAMING] Sent final audio frame for ${userId}: ${bufferedBytes} bytes (~${(bufferedBytes/bytesPerMs).toFixed(1)} ms)`);
+
+            if (isDuplicate) {
+              logDebug(`⚠️ [STREAMING-DEDUPE] Dropping duplicate final frame for ${userId} (${bufferedBytes} bytes)`);
+            } else {
+              websocket.send(frame, { binary: true });
+              // write final to disk if enabled
+              try {
+                if (data.recording && data.recording.enabled && data.recording.writeStream) {
+                  data.recording.writeStream.write(frame);
+                }
+              } catch (writeErr) {
+                console.warn('⚠️ [STREAMING] Failed to write final audio frame to disk:', writeErr.message);
+              }
+              logDebug(`🔊 [STREAMING] Sent final audio frame for ${userId}: ${bufferedBytes} bytes (~${(bufferedBytes/bytesPerMs).toFixed(1)} ms)`);
+            }
           } else {
             console.warn(`⚠️ [STREAMING] Skipping final audio chunk - connection closed for ${userId}`);
           }

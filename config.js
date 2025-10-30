@@ -106,27 +106,34 @@ export const config = {
     // OR: No action items identified.
     //
     // Output only Markdown; do not include any JSON or extra commentary.
-    summaryPrompt: process.env.GEMINI_SUMMARY_PROMPT || `You are a professional meeting summarizer. Analyze the following Discord voice meeting transcript and return a Markdown-formatted meeting summary only — no JSON and no explanatory text.
-## Meeting Summary
+    summaryPrompt: process.env.GEMINI_SUMMARY_PROMPT || (
+      'You are a professional meeting summarizer. Analyze the following Discord voice meeting transcript and return a Markdown-formatted meeting summary only — no JSON\n'
+      + '\n## Meeting Summary\n\n'
+      + '### Brief Overview\n'
+      + '(Provide a 2-4 sentence high-level summary of meeting purpose and outcome)\n\n'
+      + '### Chronological Sections\n'
+      + '- **<heading>**\n'
+      + '  - point of discussion 1\n'
+      + '  - point of discussion 2\n\n'
+      + '### Action Items\n'
+      + '- Action — Assignee: <name> — Due: <date>\n'
+      + 'Or: No action items identified.\n\n'
+      + 'Output only the Markdown content above. Do not include any extra commentary, surrounding code fences, or JSON. Keep language concise and use bullets for lists.\n\n'
+      + 'Meeting Transcript:\n'
+    ),
+  },
 
-### Brief Overview
-(Provide a 2-4 sentence high-level summary of meeting purpose and outcome)
-
-### Chronological Sections
-- **<heading>**
-  - point 1
-  - point 2
-
-### Action Items
-- Action — Assignee: <name> — Due: <date>
-Or: No action items identified.
-
-Output only the Markdown content above. Do not include any extra commentary, surrounding code fences, or JSON. Keep language concise and use bullets for lists.
-
-Meeting Transcript:
-`
-
-  
+  // Streaming / real-time transcription settings
+  streaming: {
+    // When true, apply per-user packet deduplication by hashing recent frames and
+    // dropping frames that match any hash within the configured time window.
+    enablePacketDedupe: process.env.STREAM_DEDUPE === 'false' ? false : true,
+    // Time window (ms) to consider a frame duplicate (default: 2000ms)
+    dedupeWindowMs: parseInt(process.env.STREAM_DEDUPE_WINDOW_MS) || 2000,
+    // Maximum number of recent frame hashes to keep per-user
+    dedupeMaxEntries: parseInt(process.env.STREAM_DEDUPE_MAX_ENTRIES) || 64,
+    // Enable very-verbose streaming logs (opus/decoder/transform/send events)
+    debugVerbose: process.env.STREAM_DEBUG_VERBOSE === 'true' || false
   },
 
   // Server Settings
