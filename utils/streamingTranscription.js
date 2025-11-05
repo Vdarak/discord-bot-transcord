@@ -228,10 +228,40 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     });
 
     // Pipe: opus (from Discord) -> opusDecoder (PCM stereo s16le) -> audioTransform (stereo->mono)
-    // Add diagnostic logging for incoming Opus packets (raw input)
+    // 
+    // OPUS AGGREGATION: Discord may retransmit the same Opus packet 5-6 times due to network
+    // retransmission logic. To prevent duplicate audio, we aggregate (coalesce) incoming Opus
+    // packets within a small 5ms window before decoding. This way, if 5-6 identical packets
+    // arrive, they're decoded once instead of 5-6 times.
+    const opusPacketBuffer = [];
+    let opusFlushTimer = null;
+    const coalescenceWindowMs = 5; // Aggregate Opus packets within 5ms
+
     audioStream.on('data', (opusPacket) => {
       try {
-        logDebug(`🔔 [OPUS-INPUT] Received opus packet for ${userId}: ${opusPacket.length} bytes`);
+        logDebug(`🔔 [OPUS-INPUT] Received opus packet for ${userId}: ${opusPacket.length} bytes (buffer size: ${opusPacketBuffer.length})`);
+
+        // Add packet to buffer
+        opusPacketBuffer.push(opusPacket);
+
+        // If no pending flush, schedule one after coalescenceWindowMs
+        if (!opusFlushTimer) {
+          opusFlushTimer = setTimeout(() => {
+            try {
+              if (opusPacketBuffer.length > 0) {
+                // Concatenate all buffered Opus packets and send to decoder as one
+                const aggregatedOpus = Buffer.concat(opusPacketBuffer);
+                logDebug(`🔔 [OPUS-AGGREGATE] Flushing ${opusPacketBuffer.length} opus packet(s) (${aggregatedOpus.length} bytes total) for ${userId}`);
+                opusDecoder.write(aggregatedOpus);
+              }
+            } catch (err) {
+              console.error(`❌ [OPUS-AGGREGATE] Error flushing aggregated opus for ${userId}:`, err);
+            } finally {
+              opusPacketBuffer.length = 0;
+              opusFlushTimer = null;
+            }
+          }, coalescenceWindowMs);
+        }
       } catch (err) {
         // ignore logging errors
       }
@@ -255,8 +285,9 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
       }
     });
 
-    // Correct piping: Opus stream -> decoder -> mono transform
-    audioStream.pipe(opusDecoder).pipe(audioTransform);
+    // Piping: opusDecoder (aggregated via buffer) -> mono transform
+    // Note: audioStream is NOT auto-piped; packets are aggregated and manually fed to opusDecoder
+    opusDecoder.pipe(audioTransform);
 
   // Ensure voice activity map exists for VAD logging
   if (!data.voiceActivity) data.voiceActivity = new Map();
@@ -374,6 +405,26 @@ export async function connectAudioStream(sessionId, audioStream, userId) {
     });
 
     audioTransform.on('end', () => {
+      // Flush any remaining Opus packets from aggregation buffer
+      try {
+        if (opusFlushTimer) {
+          clearTimeout(opusFlushTimer);
+          opusFlushTimer = null;
+        }
+        if (opusPacketBuffer.length > 0) {
+          try {
+            const aggregatedOpus = Buffer.concat(opusPacketBuffer);
+            logDebug(`🔔 [OPUS-AGGREGATE-FINAL] Flushing final ${opusPacketBuffer.length} opus packet(s) for ${userId}`);
+            opusDecoder.write(aggregatedOpus);
+          } catch (err) {
+            console.warn(`⚠️ [OPUS-AGGREGATE] Error flushing final opus packets for ${userId}:`, err);
+          }
+          opusPacketBuffer.length = 0;
+        }
+      } catch (err) {
+        console.warn(`⚠️ [OPUS-AGGREGATE] Error during final opus cleanup for ${userId}:`, err);
+      }
+
       // Flush any remaining buffered audio (if within allowed duration)
       try {
         if (bufferedBytes > 0) {
